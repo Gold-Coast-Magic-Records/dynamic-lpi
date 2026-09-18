@@ -35,6 +35,33 @@ FG = '#e6e6e6'
 MUTED = '#9aa0a6'
 ACCENT = '#c9a227'
 
+_PAN_ZOOM_MODES = {'pan/zoom', 'zoom rect', 'pan', 'zoom'}
+
+
+def discard_artists(artists) -> list:
+    """Drop matplotlib artists even if the Axes already cleared them."""
+    for artist in artists:
+        try:
+            if getattr(artist, 'axes', None) is None:
+                continue
+            artist.remove()
+        except Exception:
+            pass
+    return []
+
+
+def parse_tree_time(values) -> Optional[float]:
+    if not values:
+        return None
+    try:
+        return float(values[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def toolbar_blocks_cursor(mode) -> bool:
+    return str(mode or '').strip().lower() in _PAN_ZOOM_MODES
+
 
 def _float_var(value: float) -> tk.DoubleVar:
     return tk.DoubleVar(value=value)
@@ -52,6 +79,7 @@ class LpiPreviewApp:
         self.result: Optional[PreviewResult] = None
         self.cursor_s = 0.0
         self._last_dir = str(Path.home())
+        self._generating = False
 
         self._build_vars()
         self._build_ui()
@@ -152,6 +180,7 @@ class LpiPreviewApp:
         self.canvas.get_tk_widget().pack(side='top', fill='both', expand=True)
         self.canvas.mpl_connect('button_press_event', self._on_plot_click)
         self.cursor_artists = []
+        self._tree_bind = None
 
         side = ttk.Frame(body, width=240)
         side.pack(side='right', fill='y', padx=(8, 0))
@@ -167,7 +196,7 @@ class LpiPreviewApp:
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side='left', fill='both', expand=True)
         scroll.pack(side='right', fill='y')
-        self.tree.bind('<<TreeviewSelect>>', self._on_tree_select)
+        self._tree_bind = self.tree.bind('<<TreeviewSelect>>', self._on_tree_select)
 
         status = ttk.Frame(self.root, padding=(10, 4, 10, 8))
         status.pack(fill='x')
@@ -181,7 +210,7 @@ class LpiPreviewApp:
 
     def _init_plot(self) -> None:
         self._style_axes()
-        self.canvas.draw_idle()
+        self._refresh_canvas()
 
     def _style_axes(self) -> None:
         for ax, title, ylabel in (
@@ -245,20 +274,34 @@ class LpiPreviewApp:
         if self.wav is None:
             messagebox.showinfo('No WAV', 'Open a WAV file first.')
             return
-        try:
-            config = self.current_config()
-            self.result = analyse(self.wav, config)
-        except Exception as exc:
-            messagebox.showerror('Analyse error', str(exc))
+        if self._generating:
             return
-        self._fill_tree()
-        self._redraw()
-        self.var_status.set(
-            f'{Path(self.wav.path).name}  ·  {self.result.duration_s:.3f} s  ·  '
-            f'T={self.result.revolution_s:.3f} s  ·  '
-            f'{self.result.n_hops} hops  ·  {len(self.result.idx_events)} LPI events'
-        )
-        self._update_cursor_label()
+        self._generating = True
+        self.var_status.set('Generating…')
+        # Return to the Tk event loop before the heavy analyse + draw so
+        # Linux/TkAgg does not swallow the canvas refresh inside the button click.
+        self.root.after(1, self._generate_impl)
+
+    def _generate_impl(self) -> None:
+        try:
+            try:
+                config = self.current_config()
+                self.result = analyse(self.wav, config)
+            except Exception as exc:
+                messagebox.showerror('Analyse error', str(exc))
+                return
+            self._redraw()
+            self._fill_tree()
+            self.var_status.set(
+                f'{Path(self.wav.path).name}  ·  {self.result.duration_s:.3f} s  ·  '
+                f'T={self.result.revolution_s:.3f} s  ·  '
+                f'{self.result.n_hops} hops  ·  {len(self.result.idx_events)} LPI events'
+            )
+            self._update_cursor_label()
+            self._refresh_canvas()
+            self.root.after_idle(lambda: self._refresh_canvas())
+        finally:
+            self._generating = False
 
     def save_idx(self) -> None:
         if self.result is None or self.wav is None:
@@ -295,18 +338,35 @@ class LpiPreviewApp:
         self.var_status.set(f'Wrote {path}')
 
     def _fill_tree(self) -> None:
-        self.tree.delete(*self.tree.get_children())
-        if self.result is None:
-            return
-        for time_s, lpi in self.result.idx_events:
-            self.tree.insert('', 'end', values=(f'{time_s:.3f}', lpi))
+        if self._tree_bind is not None:
+            self.tree.unbind('<<TreeviewSelect>>', self._tree_bind)
+            self._tree_bind = None
+        try:
+            self.tree.delete(*self.tree.get_children())
+            if self.result is None:
+                return
+            for time_s, lpi in self.result.idx_events:
+                self.tree.insert('', 'end', values=(f'{time_s:.3f}', lpi))
+        finally:
+            self._tree_bind = self.tree.bind('<<TreeviewSelect>>', self._on_tree_select)
+
+    def _refresh_canvas(self, reset_toolbar: bool = False) -> None:
+        # Direct draw: draw_idle is coalesced with <Configure> on TkAgg and
+        # silently drops redraws after Generate on some Linux desktops.
+        self.canvas.draw()
+        if reset_toolbar:
+            try:
+                self.plot_toolbar.update()
+            except Exception:
+                pass
 
     def _redraw(self) -> None:
+        self.cursor_artists = discard_artists(self.cursor_artists)
         for ax in (self.ax_wave, self.ax_env, self.ax_lpi):
             ax.clear()
         self._style_axes()
         if self.wav is None:
-            self.canvas.draw_idle()
+            self._refresh_canvas(reset_toolbar=True)
             return
 
         times, mins, maxs = downsample_minmax(self.wav.mid, self.wav.sample_rate)
@@ -340,7 +400,7 @@ class LpiPreviewApp:
                     ax.tick_params(axis='x', which='minor', color='#3a3d44')
 
         self._draw_cursor()
-        self.canvas.draw_idle()
+        self._refresh_canvas(reset_toolbar=True)
 
     @staticmethod
     def _step_series(events, duration_s):
@@ -351,12 +411,7 @@ class LpiPreviewApp:
         return times, values
 
     def _clear_cursor(self) -> None:
-        for artist in self.cursor_artists:
-            try:
-                artist.remove()
-            except ValueError:
-                pass
-        self.cursor_artists = []
+        self.cursor_artists = discard_artists(self.cursor_artists)
 
     def _draw_cursor(self) -> None:
         self._clear_cursor()
@@ -369,30 +424,32 @@ class LpiPreviewApp:
             lookahead_end = min(duration, t + self.result.revolution_s * self.result.config.lookahead_revs)
         for ax in (self.ax_wave, self.ax_env, self.ax_lpi):
             if lookahead_end > t:
-                span = ax.axvspan(t, lookahead_end, color='#e07a5f', alpha=0.08, linewidth=0)
+                span = ax.axvspan(t, lookahead_end, color='#e07a5f', alpha=0.08, linewidth=0, zorder=20)
                 self.cursor_artists.append(span)
-            line = ax.axvline(t, color='#f4f1de', linewidth=0.9, alpha=0.9)
+            line = ax.axvline(t, color='#f4f1de', linewidth=0.9, alpha=0.9, zorder=21)
             self.cursor_artists.append(line)
 
     def _on_plot_click(self, event) -> None:
         if event.inaxes is None or event.xdata is None:
             return
-        if getattr(self.plot_toolbar, 'mode', ''):
+        if toolbar_blocks_cursor(getattr(self.plot_toolbar, 'mode', None)):
             return
         self.cursor_s = float(event.xdata)
         self._update_cursor_label()
         self._draw_cursor()
-        self.canvas.draw_idle()
+        self._refresh_canvas()
 
     def _on_tree_select(self, _event) -> None:
         selection = self.tree.selection()
         if not selection:
             return
-        time_s = float(self.tree.item(selection[0], 'values')[0])
+        time_s = parse_tree_time(self.tree.item(selection[0], 'values'))
+        if time_s is None:
+            return
         self.cursor_s = time_s
         self._update_cursor_label()
         self._draw_cursor()
-        self.canvas.draw_idle()
+        self._refresh_canvas()
 
     def _update_cursor_label(self) -> None:
         if self.wav is None:
