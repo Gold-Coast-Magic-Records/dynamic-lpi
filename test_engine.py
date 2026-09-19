@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from engine import (
     PreviewConfig,
     analyse,
+    apply_lpi_hysteresis,
     collapse_events,
     forward_max,
     load_wav,
@@ -84,6 +85,55 @@ class MapCombinedToLpiTests(unittest.TestCase):
         self.assertEqual(int(lpi[-1]), 19500)
         mid = 24500 - (0.4 / 0.8) * 5000
         self.assertEqual(int(lpi[1]), int(round(mid)))
+
+
+class QuantizeTwoRevTests(unittest.TestCase):
+    def test_larger_quantize_reduces_idx_events_in_two_rev_mode(self):
+        sample_rate = 22050
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / 'kicks.wav'
+            segments = []
+            for amp in (0.08, 0.55, 0.12, 0.7, 0.09, 0.4, 0.15, 0.85, 0.1, 0.5):
+                segments.append((0.35, 100.0, amp))
+            _write_tone_wav(wav_path, sample_rate, segments)
+            wav = load_wav(wav_path)
+
+        def events_for(quantize: int) -> int:
+            result = analyse(wav, PreviewConfig(
+                rpm=33.333,
+                hop_ms=20.0,
+                lpf_hz=100.0,
+                lpi_tight=24000,
+                lpi_open=19250,
+                reference_peak=0.40,
+                quantize=quantize,
+                min_hold_ms=100.0,
+                slew_ms=250.0,
+                lookahead_revs=1.0,
+                two_rev=True,
+            ))
+            return len(result.idx_events)
+
+        fine = events_for(16)
+        coarse = events_for(256)
+        self.assertLess(coarse, fine)
+        self.assertGreater(fine, 4)
+
+    def test_hysteresis_ignores_mid_bin_chatter(self):
+        # 23720 is the rounding midpoint between 23712 and 23728 at quantize 16.
+        raw = np.array([23712.0, 23720.0, 23722.0, 23718.0, 23712.0])
+        got = apply_lpi_hysteresis(raw, quantize=16, lo=19250, hi=24000)
+        np.testing.assert_array_equal(got, [23712, 23712, 23712, 23712, 23712])
+
+    def test_hysteresis_moves_on_a_full_quantize_step(self):
+        raw = np.array([23712.0, 23728.0, 23728.0])
+        got = apply_lpi_hysteresis(raw, quantize=16, lo=19250, hi=24000)
+        np.testing.assert_array_equal(got, [23712, 23728, 23728])
+
+    def test_hysteresis_holds_clipped_open_without_off_grid_chatter(self):
+        raw = np.array([19250.0, 19258.0, 19264.0, 19252.0, 19250.0])
+        got = apply_lpi_hysteresis(raw, quantize=16, lo=19250, hi=24000)
+        np.testing.assert_array_equal(got, [19250, 19250, 19250, 19250, 19250])
 
 
 class LookaheadTests(unittest.TestCase):

@@ -31,15 +31,15 @@ IdxEvent = Tuple[float, int]
 class PreviewConfig:
     rpm: float = 33.333
     hop_ms: float = 20.0
-    lpf_hz: float = 500.0
-    lpi_tight: int = 6114
-    lpi_open: int = 2048
+    lpf_hz: float = 100.0
+    lpi_tight: int = 24000
+    lpi_open: int = 19250
     reference_peak: float = 0.40
-    quantize: int = 64
+    quantize: int = 16
     min_hold_ms: float = 100.0
     slew_ms: float = 250.0
     lookahead_revs: float = 1.0
-    two_rev: bool = False
+    two_rev: bool = True
 
 
 @dataclass
@@ -153,9 +153,33 @@ def map_combined_to_lpi(combined: np.ndarray, config: PreviewConfig) -> np.ndarr
     denom = min(max(peak, 1e-6), ref_scale)
     norm = np.clip(combined / denom, 0.0, 1.0)
     lpi = tight - norm * (tight - open_l)
-    quantize = max(1, int(config.quantize))
-    lpi = np.round(lpi / quantize) * quantize
-    return np.clip(lpi, lo, hi).astype(np.int32)
+    return np.clip(lpi, lo, hi)
+
+
+def apply_lpi_hysteresis(lpi: np.ndarray, quantize: int, lo: int, hi: int) -> np.ndarray:
+    """Snap to the quantize grid, but only move after a full step of travel.
+
+    Plain rounding chatters when the curve sits on a bin boundary — common in
+    two-revolution mode, where sliding-max plateaus hover near Open LPI.
+    """
+    if lpi.size == 0:
+        return lpi.astype(np.int32, copy=False)
+    q = max(1, int(quantize))
+    lo_i = int(min(lo, hi))
+    hi_i = int(max(lo, hi))
+
+    def snap(value: float) -> int:
+        return int(np.clip(np.round(value / q) * q, lo_i, hi_i))
+
+    out = np.empty(int(lpi.shape[0]), dtype=np.int32)
+    held = snap(float(lpi[0]))
+    out[0] = held
+    for i in range(1, out.shape[0]):
+        raw = float(lpi[i])
+        if raw >= held + q or raw <= held - q:
+            held = snap(raw)
+        out[i] = held
+    return out
 
 
 def apply_slew(lpi: np.ndarray, hop_s: float, slew_ms: float, lpi_span: float) -> np.ndarray:
@@ -228,11 +252,9 @@ def analyse(wav: WavData, config: PreviewConfig | None = None) -> PreviewResult:
 
     lpi = map_combined_to_lpi(combined, config)
     lpi = apply_slew(lpi, hop_s, config.slew_ms, float(config.lpi_tight - config.lpi_open))
-    quantize = max(1, int(config.quantize))
     lo = min(config.lpi_tight, config.lpi_open)
     hi = max(config.lpi_tight, config.lpi_open)
-    lpi = (np.round(lpi / quantize) * quantize).astype(np.int32)
-    lpi = np.clip(lpi, lo, hi)
+    lpi = apply_lpi_hysteresis(lpi, config.quantize, lo, hi)
     min_hops = max(1, int(round(config.min_hold_ms / (hop_s * 1000.0))))
     lpi = apply_min_hold(lpi, min_hops)
 

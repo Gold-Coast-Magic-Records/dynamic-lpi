@@ -146,7 +146,7 @@ class LpiPreviewApp:
         self._add_control(controls, 'LPF Hz', self.var_lpf, 1, 0, width=8)
         self._add_control(controls, 'Hop ms', self.var_hop, 1, 4, width=8)
         self._add_control(controls, 'Lookahead revs', self.var_lookahead, 1, 6, width=8)
-        self._add_control(controls, 'Quantize', self.var_quantize, 1, 8, width=8)
+        self._add_control(controls, 'Quantize step', self.var_quantize, 1, 8, width=8)
         self._add_control(controls, 'Min hold ms', self.var_hold, 2, 0, width=8)
         self._add_control(controls, 'Slew ms', self.var_slew, 2, 4, width=8)
         ttk.Checkbutton(controls, text='Two-revolution preview', variable=self.var_two_rev).grid(
