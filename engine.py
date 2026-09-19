@@ -35,12 +35,12 @@ class PreviewConfig:
     lpi_tight: int = 24000
     lpi_open: int = 19250
     reference_peak: float = 0.40
-    quantize: int = 16
+    quantize: int = 1024
     min_hold_ms: float = 100.0
     slew_ms: float = 250.0
     lookahead_revs: float = 1.0
     two_rev: bool = True
-    lpi_lpf_hz: float = 1.0
+    lpi_lpf_hz: float = 0.2
 
 
 @dataclass

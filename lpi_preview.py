@@ -51,12 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--lpi-tight', type=int, default=24000, help='G2 L for quiet / narrow land (higher = tighter)')
     parser.add_argument('--lpi-open', type=int, default=19250, help='G2 L for loud / wide land (lower = faster feed)')
     parser.add_argument('--reference-peak', type=float, default=0.40, help='Envelope level that saturates to Open LPI; quieter tracks still stretch their peak to Open')
-    parser.add_argument('--quantize', type=int, default=16, help='Minimum LPI step before a new .idx event; larger = fewer updates')
+    parser.add_argument('--quantize', type=int, default=1024, help='Minimum LPI step before a new .idx event; larger = fewer updates')
     parser.add_argument('--min-hold-ms', type=float, default=100.0, help='Ignore LPI changes shorter than this')
     parser.add_argument('--slew-ms', type=float, default=250.0, help='Time to slew across the full LPI range; 0 disables')
     parser.add_argument('--lookahead-revs', type=float, default=1.0, help='Lookahead window in revolutions')
     parser.add_argument('--two-rev', action=argparse.BooleanOptionalAction, default=True, help='Use next-rev + following-rev (Neumann-style). Default: on.')
-    parser.add_argument('--lpi-lpf', type=float, default=1.0, dest='lpi_lpf_hz', help='Low-pass Hz on the LPI curve after mapping; 0 disables')
+    parser.add_argument('--lpi-lpf', type=float, default=0.2, dest='lpi_lpf_hz', help='Low-pass Hz on the LPI curve after mapping; 0 disables')
     parser.add_argument('-q', '--quiet', action='store_true', help='Print only the written .idx path')
     return parser
 
