@@ -104,6 +104,7 @@ class LpiPreviewApp:
         self.var_two_rev = tk.BooleanVar(value=c.two_rev)
         self.var_status = tk.StringVar(value='Open a WAV to generate an LPI preview.')
         self.var_cursor = tk.StringVar(value='t = —')
+        self.var_idx_events = tk.StringVar(value='.idx events')
 
     def _build_ui(self) -> None:
         self.root.title('Dynamic LPI Preview')
@@ -187,7 +188,7 @@ class LpiPreviewApp:
         side = ttk.Frame(body, width=240)
         side.pack(side='right', fill='y', padx=(8, 0))
         side.pack_propagate(False)
-        ttk.Label(side, text='.idx events', foreground=MUTED).pack(anchor='w', pady=(0, 4))
+        ttk.Label(side, textvariable=self.var_idx_events, foreground=MUTED).pack(anchor='w', pady=(0, 4))
         columns = ('time', 'lpi')
         self.tree = ttk.Treeview(side, columns=columns, show='headings', selectmode='browse')
         self.tree.heading('time', text='Time (s)')
@@ -347,9 +348,12 @@ class LpiPreviewApp:
         try:
             self.tree.delete(*self.tree.get_children())
             if self.result is None:
+                self.var_idx_events.set('.idx events')
                 return
             for time_s, lpi in self.result.idx_events:
                 self.tree.insert('', 'end', values=(f'{time_s:.3f}', lpi))
+            count = len(self.result.idx_events)
+            self.var_idx_events.set(f'{count} .idx events')
         finally:
             self._tree_bind = self.tree.bind('<<TreeviewSelect>>', self._on_tree_select)
 
