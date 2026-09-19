@@ -18,6 +18,7 @@ from engine import (
     PreviewConfig,
     analyse,
     apply_lpi_hysteresis,
+    apply_lpi_lowpass,
     collapse_events,
     forward_max,
     load_wav,
@@ -111,6 +112,7 @@ class QuantizeTwoRevTests(unittest.TestCase):
                 slew_ms=250.0,
                 lookahead_revs=1.0,
                 two_rev=True,
+                lpi_lpf_hz=0.0,
             ))
             return len(result.idx_events)
 
@@ -136,6 +138,54 @@ class QuantizeTwoRevTests(unittest.TestCase):
         np.testing.assert_array_equal(got, [19250, 19250, 19250, 19250, 19250])
 
 
+class LpiLowpassTests(unittest.TestCase):
+    def test_zero_cutoff_is_passthrough(self):
+        lpi = np.array([24000.0, 23800.0, 20000.0, 19250.0])
+        got = apply_lpi_lowpass(lpi, hop_s=0.02, cutoff_hz=0.0)
+        np.testing.assert_allclose(got, lpi)
+
+    def test_attenuates_hop_rate_chatter_more_than_phrase_moves(self):
+        hop_s = 0.02
+        t = np.arange(800) * hop_s
+        slow = 22000.0 + 1500.0 * np.sin(2 * np.pi * 0.2 * t)
+        chatter = 400.0 * np.sin(2 * np.pi * 8.0 * t)
+        raw = slow + chatter
+        filtered = apply_lpi_lowpass(raw, hop_s=hop_s, cutoff_hz=1.0)
+        raw_fast = raw - slow
+        filt_fast = filtered - slow
+        self.assertLess(float(np.std(filt_fast)), 0.4 * float(np.std(raw_fast)))
+        self.assertGreater(float(np.std(filtered)), 0.6 * float(np.std(slow)))
+
+    def test_analyse_lpi_lpf_reduces_idx_events(self):
+        sample_rate = 22050
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / 'kicks.wav'
+            segments = []
+            for amp in (0.08, 0.55, 0.12, 0.7, 0.09, 0.4, 0.15, 0.85, 0.1, 0.5):
+                segments.append((0.35, 100.0, amp))
+            _write_tone_wav(wav_path, sample_rate, segments)
+            wav = load_wav(wav_path)
+
+        def events_for(lpi_lpf_hz: float) -> int:
+            result = analyse(wav, PreviewConfig(
+                rpm=33.333,
+                hop_ms=20.0,
+                lpf_hz=100.0,
+                lpi_tight=24000,
+                lpi_open=19250,
+                reference_peak=0.40,
+                quantize=16,
+                min_hold_ms=100.0,
+                slew_ms=0.0,
+                lookahead_revs=1.0,
+                two_rev=True,
+                lpi_lpf_hz=lpi_lpf_hz,
+            ))
+            return len(result.idx_events)
+
+        self.assertLess(events_for(1.0), events_for(0.0))
+
+
 class LookaheadTests(unittest.TestCase):
     def test_lpi_opens_one_revolution_before_loud_passage(self):
         sample_rate = 44100
@@ -154,6 +204,7 @@ class LookaheadTests(unittest.TestCase):
             slew_ms=0.0,
             lookahead_revs=1.0,
             two_rev=False,
+            lpi_lpf_hz=0.0,
         )
         with tempfile.TemporaryDirectory() as tmp:
             wav_path = Path(tmp) / 'fixture.wav'

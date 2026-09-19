@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--slew-ms', type=float, default=250.0, help='Time to slew across the full LPI range; 0 disables')
     parser.add_argument('--lookahead-revs', type=float, default=1.0, help='Lookahead window in revolutions')
     parser.add_argument('--two-rev', action=argparse.BooleanOptionalAction, default=True, help='Use next-rev + following-rev (Neumann-style). Default: on.')
+    parser.add_argument('--lpi-lpf', type=float, default=1.0, dest='lpi_lpf_hz', help='Low-pass Hz on the LPI curve after mapping; 0 disables')
     parser.add_argument('-q', '--quiet', action='store_true', help='Print only the written .idx path')
     return parser
 
@@ -73,6 +74,7 @@ def config_from_args(args: argparse.Namespace) -> PreviewConfig:
         slew_ms=args.slew_ms,
         lookahead_revs=args.lookahead_revs,
         two_rev=args.two_rev,
+        lpi_lpf_hz=args.lpi_lpf_hz,
     )
 
 

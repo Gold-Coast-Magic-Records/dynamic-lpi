@@ -100,6 +100,7 @@ class LpiPreviewApp:
         self.var_hold = _float_var(c.min_hold_ms)
         self.var_slew = _float_var(c.slew_ms)
         self.var_lookahead = _float_var(c.lookahead_revs)
+        self.var_lpi_lpf = _float_var(c.lpi_lpf_hz)
         self.var_two_rev = tk.BooleanVar(value=c.two_rev)
         self.var_status = tk.StringVar(value='Open a WAV to generate an LPI preview.')
         self.var_cursor = tk.StringVar(value='t = —')
@@ -149,8 +150,9 @@ class LpiPreviewApp:
         self._add_control(controls, 'Quantize step', self.var_quantize, 1, 8, width=8)
         self._add_control(controls, 'Min hold ms', self.var_hold, 2, 0, width=8)
         self._add_control(controls, 'Slew ms', self.var_slew, 2, 4, width=8)
+        self._add_control(controls, 'LPI LPF Hz', self.var_lpi_lpf, 2, 6, width=8)
         ttk.Checkbutton(controls, text='Two-revolution preview', variable=self.var_two_rev).grid(
-            row=2, column=6, columnspan=3, sticky='w', padx=(8, 0), pady=4
+            row=3, column=0, columnspan=4, sticky='w', padx=(8, 0), pady=4
         )
         for col in range(10):
             controls.grid_columnconfigure(col, weight=0)
@@ -241,6 +243,7 @@ class LpiPreviewApp:
             slew_ms=float(self.var_slew.get()),
             lookahead_revs=float(self.var_lookahead.get()),
             two_rev=bool(self.var_two_rev.get()),
+            lpi_lpf_hz=float(self.var_lpi_lpf.get()),
         )
 
     def browse_wav(self) -> None:

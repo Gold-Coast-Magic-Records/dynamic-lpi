@@ -40,6 +40,7 @@ class PreviewConfig:
     slew_ms: float = 250.0
     lookahead_revs: float = 1.0
     two_rev: bool = True
+    lpi_lpf_hz: float = 1.0
 
 
 @dataclass
@@ -156,6 +157,26 @@ def map_combined_to_lpi(combined: np.ndarray, config: PreviewConfig) -> np.ndarr
     return np.clip(lpi, lo, hi)
 
 
+def apply_lpi_lowpass(
+    lpi: np.ndarray,
+    hop_s: float,
+    cutoff_hz: float,
+    order: int = 2,
+) -> np.ndarray:
+    """Zero-phase low-pass on the hop-rate LPI curve. cutoff_hz <= 0 disables."""
+    if lpi.size < 8 or hop_s <= 0 or cutoff_hz <= 0:
+        return lpi
+    nyquist = 0.5 / hop_s
+    if cutoff_hz >= nyquist:
+        return lpi
+    order = int(np.clip(order, 1, 4))
+    sos = butter(order, cutoff_hz / nyquist, btype='low', output='sos')
+    try:
+        return sosfiltfilt(sos, np.asarray(lpi, dtype=np.float64))
+    except ValueError:
+        return lpi
+
+
 def apply_lpi_hysteresis(lpi: np.ndarray, quantize: int, lo: int, hi: int) -> np.ndarray:
     """Snap to the quantize grid, but only move after a full step of travel.
 
@@ -251,9 +272,11 @@ def analyse(wav: WavData, config: PreviewConfig | None = None) -> PreviewResult:
         combined = envelope + lookahead
 
     lpi = map_combined_to_lpi(combined, config)
+    lpi = apply_lpi_lowpass(lpi, hop_s, config.lpi_lpf_hz)
     lpi = apply_slew(lpi, hop_s, config.slew_ms, float(config.lpi_tight - config.lpi_open))
     lo = min(config.lpi_tight, config.lpi_open)
     hi = max(config.lpi_tight, config.lpi_open)
+    lpi = np.clip(lpi, lo, hi)
     lpi = apply_lpi_hysteresis(lpi, config.quantize, lo, hi)
     min_hops = max(1, int(round(config.min_hold_ms / (hop_s * 1000.0))))
     lpi = apply_min_hold(lpi, min_hops)
