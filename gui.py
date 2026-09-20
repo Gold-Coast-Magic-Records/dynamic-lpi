@@ -30,6 +30,7 @@ from engine import (
     write_env,
     write_idx,
 )
+from player import Playhead, create_audio_output
 
 
 BG = '#1b1d21'
@@ -100,10 +101,15 @@ class LpiPreviewApp:
         self.tracks = []
         self.idx_origin: Optional[str] = None
         self._syncing_list = False
+        self.player = Playhead(output=create_audio_output())
+        self._playback_after = None
+        self._cursor_lines = []
+        self._plot_bg = None
 
         self._build_vars()
         self._build_ui()
         self._init_plot()
+        self.root.protocol('WM_DELETE_WINDOW', self._on_close)
 
         if folder_path:
             self.root.after(80, lambda: self.open_folder(folder_path))
@@ -126,6 +132,7 @@ class LpiPreviewApp:
         self.var_two_rev = tk.BooleanVar(value=c.two_rev)
         self.var_status = tk.StringVar(value='Open a WAV to generate an LPI preview.')
         self.var_cursor = tk.StringVar(value='t = —')
+        self.var_now_lpi = tk.StringVar(value='LPI —')
         self.var_idx_events = tk.StringVar(value='.idx events')
         self.var_idx_origin = tk.StringVar(value='')
 
@@ -154,13 +161,27 @@ class LpiPreviewApp:
 
         toolbar = ttk.Frame(self.root, padding=(10, 8, 10, 4))
         toolbar.pack(fill='x')
+        self.toolbar = toolbar
         ttk.Button(toolbar, text='Open WAV…', command=self.browse_wav).pack(side='left')
         ttk.Button(toolbar, text='Open folder…', command=self.browse_folder).pack(side='left', padx=(8, 0))
         ttk.Button(toolbar, text='Generate', command=self.generate).pack(side='left', padx=(8, 0))
         ttk.Button(toolbar, text='Save .idx…', command=self.save_idx).pack(side='left', padx=(8, 0))
         ttk.Button(toolbar, text='Save .env.csv…', command=self.save_env).pack(side='left', padx=(8, 0))
+        self.play_button = ttk.Button(toolbar, text='Play', command=self.play)
+        self.play_button.pack(side='left', padx=(16, 0))
+        self.pause_button = ttk.Button(toolbar, text='Pause', command=self.pause)
+        self.pause_button.pack(side='left', padx=(8, 0))
+        self.stop_button = ttk.Button(toolbar, text='Stop', command=self.stop_playback)
+        self.stop_button.pack(side='left', padx=(8, 0))
         ttk.Label(toolbar, textvariable=self.var_idx_origin, foreground=ACCENT).pack(side='left', padx=(16, 0))
-        ttk.Label(toolbar, textvariable=self.var_cursor, foreground=MUTED).pack(side='right')
+
+        stats = ttk.Frame(self.root, padding=(10, 0, 10, 2))
+        stats.pack(fill='x')
+        self.stats_frame = stats
+        self.lpi_label = ttk.Label(stats, textvariable=self.var_now_lpi, foreground=ACCENT)
+        self.lpi_label.pack(side='right', anchor='e')
+        self.cursor_label = ttk.Label(stats, textvariable=self.var_cursor, foreground=MUTED)
+        self.cursor_label.pack(side='left', anchor='w')
 
         controls = ttk.LabelFrame(self.root, text='Preview parameters', padding=(8, 2))
         controls.pack(fill='x', padx=10, pady=(0, 4))
@@ -189,9 +210,10 @@ class LpiPreviewApp:
         body = ttk.Frame(self.root)
         body.pack(fill='both', expand=True, padx=10, pady=(0, 6))
 
-        tracks_frame = ttk.Frame(body, width=180)
+        tracks_frame = ttk.Frame(body, width=110)
         tracks_frame.pack(side='left', fill='y', padx=(0, 8))
         tracks_frame.pack_propagate(False)
+        self.tracks_frame = tracks_frame
         ttk.Label(tracks_frame, text='Tracks', foreground=MUTED).pack(anchor='w', pady=(0, 4))
         self.track_list = tk.Listbox(
             tracks_frame,
@@ -226,7 +248,10 @@ class LpiPreviewApp:
         self.plot_toolbar.pack(side='bottom', fill='x')
         self.canvas.get_tk_widget().pack(side='top', fill='both', expand=True)
         self.canvas.mpl_connect('button_press_event', self._on_plot_click)
+        self.canvas.mpl_connect('resize_event', lambda _e: setattr(self, '_plot_bg', None))
         self.cursor_artists = []
+        self._cursor_lines = []
+        self._plot_bg = None
         self._tree_bind = None
 
         side = ttk.Frame(body, width=240)
@@ -247,6 +272,7 @@ class LpiPreviewApp:
 
         status = ttk.Frame(self.root, padding=(10, 4, 10, 8))
         status.pack(fill='x')
+        self.status_frame = status
         ttk.Label(status, textvariable=self.var_status, foreground=MUTED).pack(anchor='w')
 
     def _add_control(self, parent, label, variable, row, column, width=8):
@@ -305,6 +331,90 @@ class LpiPreviewApp:
         if path:
             self.open_folder(path)
 
+    def play(self) -> None:
+        if self.wav is None:
+            messagebox.showinfo('No WAV', 'Open a WAV file first.')
+            return
+        if not getattr(self.player.output, 'available', True):
+            messagebox.showerror(
+                'No audio output',
+                'Install PortAudio and the sounddevice package:\n  pip install sounddevice',
+            )
+            return
+        try:
+            if self.player.samples is None:
+                self.player.load(self.wav.channels, self.wav.sample_rate)
+            if abs(self.player.position_s - self.cursor_s) > 0.02:
+                self.player.seek(self.cursor_s)
+            self.player.play()
+        except Exception as exc:
+            messagebox.showerror('Playback error', str(exc))
+            return
+        self.cursor_s = self.player.position_s
+        self._sync_playhead_visual()
+        self._schedule_playback_ticks()
+
+    def pause(self) -> None:
+        if self.player.is_playing:
+            self.player.pause()
+        self.cursor_s = self.player.position_s
+        self._cancel_playback_ticks()
+        self._sync_playhead_visual()
+
+    def stop_playback(self) -> None:
+        self.player.stop()
+        self.cursor_s = 0.0
+        self._cancel_playback_ticks()
+        self._sync_playhead_visual()
+
+    def _seek_to(self, time_s: float) -> None:
+        if self.wav is None:
+            return
+        duration = self.wav.mid.shape[0] / self.wav.sample_rate
+        t = min(max(float(time_s), 0.0), duration)
+        self.cursor_s = t
+        if self.player.samples is not None:
+            self.player.seek(t)
+        self._update_cursor_label()
+        if self.player.is_playing and self._cursor_lines:
+            self._blit_playhead()
+        else:
+            self._draw_cursor()
+            self._refresh_canvas()
+
+    def _sync_playhead_visual(self) -> None:
+        self._update_cursor_label()
+        self._draw_cursor()
+        self._refresh_canvas()
+
+    def _schedule_playback_ticks(self) -> None:
+        self._cancel_playback_ticks()
+        self._playback_after = self.root.after(80, self._tick_playback)
+
+    def _cancel_playback_ticks(self) -> None:
+        if self._playback_after is not None:
+            try:
+                self.root.after_cancel(self._playback_after)
+            except Exception:
+                pass
+            self._playback_after = None
+
+    def _tick_playback(self) -> None:
+        self._playback_after = None
+        self.cursor_s = self.player.position_s
+        self._update_cursor_label()
+        self._blit_playhead()
+        if self.player.is_playing:
+            self._playback_after = self.root.after(80, self._tick_playback)
+
+    def _on_close(self) -> None:
+        self._cancel_playback_ticks()
+        try:
+            self.player.stop()
+        except Exception:
+            pass
+        self.root.destroy()
+
     def open_folder(self, folder: str) -> None:
         tracks = list_numbered_tracks(folder)
         if not tracks:
@@ -322,6 +432,9 @@ class LpiPreviewApp:
             messagebox.showerror('WAV error', str(exc))
             return
         wav_path = Path(path)
+        self._cancel_playback_ticks()
+        self.cursor_s = 0.0
+        self.player.load(self.wav.channels, self.wav.sample_rate)
         self._last_dir = str(wav_path.parent)
         self.root.title(f'Dynamic LPI Preview — {wav_path.name}')
         if not from_list:
@@ -483,9 +596,31 @@ class LpiPreviewApp:
             self._tree_bind = self.tree.bind('<<TreeviewSelect>>', self._on_tree_select)
 
     def _refresh_canvas(self, reset_toolbar: bool = False) -> None:
-        # Direct draw: draw_idle is coalesced with <Configure> on TkAgg and
-        # silently drops redraws after Generate on some Linux desktops.
-        self.canvas.draw()
+        # Hide the playhead so the cached background can be blitted while playing
+        # without a full matplotlib redraw (which underruns the audio callback).
+        try:
+            for line in self._cursor_lines:
+                line.set_visible(False)
+            self.canvas.draw()
+            try:
+                self._plot_bg = self.canvas.copy_from_bbox(self.figure.bbox)
+            except Exception:
+                self._plot_bg = None
+            for line in self._cursor_lines:
+                line.set_visible(True)
+            if self._plot_bg is not None and self._cursor_lines:
+                try:
+                    for line in self._cursor_lines:
+                        if line.axes is not None:
+                            line.axes.draw_artist(line)
+                    self.canvas.blit(self.figure.bbox)
+                except Exception:
+                    self.canvas.draw()
+        except Exception:
+            try:
+                self.canvas.draw()
+            except Exception:
+                pass
         if reset_toolbar:
             try:
                 self.plot_toolbar.update()
@@ -494,6 +629,8 @@ class LpiPreviewApp:
 
     def _redraw(self) -> None:
         self.cursor_artists = discard_artists(self.cursor_artists)
+        self._cursor_lines = []
+        self._plot_bg = None
         for ax in (self.ax_wave, self.ax_env, self.ax_lpi):
             ax.clear()
         self._style_axes()
@@ -544,6 +681,7 @@ class LpiPreviewApp:
 
     def _clear_cursor(self) -> None:
         self.cursor_artists = discard_artists(self.cursor_artists)
+        self._cursor_lines = []
 
     def _draw_cursor(self) -> None:
         self._clear_cursor()
@@ -560,16 +698,38 @@ class LpiPreviewApp:
                 self.cursor_artists.append(span)
             line = ax.axvline(t, color='#f4f1de', linewidth=0.9, alpha=0.9, zorder=21)
             self.cursor_artists.append(line)
+            self._cursor_lines.append(line)
+
+    def _blit_playhead(self) -> None:
+        if self.wav is None:
+            return
+        duration = self.wav.mid.shape[0] / self.wav.sample_rate
+        t = min(max(self.cursor_s, 0.0), duration)
+        if not self._cursor_lines:
+            self._draw_cursor()
+            self._refresh_canvas()
+            return
+        for line in self._cursor_lines:
+            line.set_xdata([t, t])
+        if self._plot_bg is None:
+            self._refresh_canvas()
+            return
+        try:
+            self.canvas.restore_region(self._plot_bg)
+            for line in self._cursor_lines:
+                if line.axes is not None:
+                    line.axes.draw_artist(line)
+            self.canvas.blit(self.figure.bbox)
+            self.canvas.flush_events()
+        except Exception:
+            self._plot_bg = None
 
     def _on_plot_click(self, event) -> None:
         if event.inaxes is None or event.xdata is None:
             return
         if toolbar_blocks_cursor(getattr(self.plot_toolbar, 'mode', None)):
             return
-        self.cursor_s = float(event.xdata)
-        self._update_cursor_label()
-        self._draw_cursor()
-        self._refresh_canvas()
+        self._seek_to(float(event.xdata))
 
     def _on_tree_select(self, _event) -> None:
         selection = self.tree.selection()
@@ -578,23 +738,23 @@ class LpiPreviewApp:
         time_s = parse_tree_time(self.tree.item(selection[0], 'values'))
         if time_s is None:
             return
-        self.cursor_s = time_s
-        self._update_cursor_label()
-        self._draw_cursor()
-        self._refresh_canvas()
+        self._seek_to(time_s)
 
     def _update_cursor_label(self) -> None:
         if self.wav is None:
             self.var_cursor.set('t = —')
+            self.var_now_lpi.set('LPI —')
             return
         t = max(0.0, self.cursor_s)
         parts = [f't = {t:.3f}s']
+        lpi_text = 'LPI —'
         if self.result is not None and self.result.n_hops:
             idx = int(np.clip(np.searchsorted(self.result.envelope_times, t), 0, self.result.n_hops - 1))
             parts.append(f'peak {self.result.envelope[idx]:.3f}')
             parts.append(f'look {self.result.lookahead[idx]:.3f}')
-            parts.append(f'LPI {int(self.result.lpi_dense[idx])}')
+            lpi_text = f'LPI {int(self.result.lpi_dense[idx])}'
         self.var_cursor.set('   ·   '.join(parts))
+        self.var_now_lpi.set(lpi_text)
 
 
 def run_gui(
