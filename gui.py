@@ -162,27 +162,29 @@ class LpiPreviewApp:
         ttk.Label(toolbar, textvariable=self.var_idx_origin, foreground=ACCENT).pack(side='left', padx=(16, 0))
         ttk.Label(toolbar, textvariable=self.var_cursor, foreground=MUTED).pack(side='right')
 
-        controls = ttk.LabelFrame(self.root, text='Preview parameters', padding=(10, 6))
-        controls.pack(fill='x', padx=10, pady=(0, 6))
-        self._add_control(controls, 'RPM', self.var_rpm, 0, 0, width=8)
-        ttk.Button(controls, text='33⅓', command=lambda: self.var_rpm.set(33.333)).grid(row=0, column=2, padx=(0, 12))
-        ttk.Button(controls, text='45', command=lambda: self.var_rpm.set(45.0)).grid(row=0, column=3, padx=(0, 16))
-        self._add_control(controls, 'LPI tight', self.var_tight, 0, 4, width=8)
-        self._add_control(controls, 'LPI open', self.var_open, 0, 6, width=8)
-        self._add_control(controls, 'Ref peak', self.var_ref, 0, 8, width=8)
-        self._add_control(controls, 'LPF Hz', self.var_lpf, 1, 0, width=8)
-        self._add_control(controls, 'Hop ms', self.var_hop, 1, 4, width=8)
-        self._add_control(controls, 'Lookahead revs', self.var_lookahead, 1, 6, width=8)
-        self._add_control(controls, 'Quantize step', self.var_quantize, 1, 8, width=8)
-        self._add_control(controls, 'Min hold ms', self.var_hold, 2, 0, width=8)
-        self._add_control(controls, 'Slew ms', self.var_slew, 2, 4, width=8)
-        self._add_control(controls, 'LPI LPF Hz', self.var_lpi_lpf, 2, 6, width=8)
-        ttk.Checkbutton(controls, text='Two-revolution preview', variable=self.var_two_rev).grid(
-            row=3, column=0, columnspan=4, sticky='w', padx=(8, 0), pady=4
+        controls = ttk.LabelFrame(self.root, text='Preview parameters', padding=(8, 2))
+        controls.pack(fill='x', padx=10, pady=(0, 4))
+        self.param_frame = controls
+        self._add_control(controls, 'RPM', self.var_rpm, 0, 0, width=7)
+        ttk.Button(controls, text='33⅓', command=lambda: self.var_rpm.set(33.333)).grid(
+            row=0, column=2, padx=(0, 4)
         )
-        for col in range(10):
-            controls.grid_columnconfigure(col, weight=0)
-        controls.grid_columnconfigure(9, weight=1)
+        ttk.Button(controls, text='45', command=lambda: self.var_rpm.set(45.0)).grid(
+            row=0, column=3, padx=(0, 8)
+        )
+        self._add_control(controls, 'LPI tight', self.var_tight, 0, 4, width=7)
+        self._add_control(controls, 'LPI open', self.var_open, 0, 6, width=7)
+        self._add_control(controls, 'Ref peak', self.var_ref, 0, 8, width=6)
+        self._add_control(controls, 'LPF Hz', self.var_lpf, 0, 10, width=6)
+        self._add_control(controls, 'Hop ms', self.var_hop, 0, 12, width=6)
+        self._add_control(controls, 'Lookahead revs', self.var_lookahead, 1, 0, width=6)
+        self._add_control(controls, 'Quantize step', self.var_quantize, 1, 2, width=6)
+        self._add_control(controls, 'Min hold ms', self.var_hold, 1, 4, width=6)
+        self._add_control(controls, 'Slew ms', self.var_slew, 1, 6, width=6)
+        self._add_control(controls, 'LPI LPF Hz', self.var_lpi_lpf, 1, 8, width=6)
+        ttk.Checkbutton(controls, text='Two-revolution preview', variable=self.var_two_rev).grid(
+            row=1, column=10, columnspan=4, sticky='w', padx=(8, 0)
+        )
 
         body = ttk.Frame(self.root)
         body.pack(fill='both', expand=True, padx=10, pady=(0, 6))
@@ -248,9 +250,9 @@ class LpiPreviewApp:
         ttk.Label(status, textvariable=self.var_status, foreground=MUTED).pack(anchor='w')
 
     def _add_control(self, parent, label, variable, row, column, width=8):
-        ttk.Label(parent, text=label).grid(row=row, column=column, sticky='e', padx=(8, 4), pady=3)
+        ttk.Label(parent, text=label).grid(row=row, column=column, sticky='e', padx=(6, 3), pady=1)
         entry = ttk.Entry(parent, textvariable=variable, width=width)
-        entry.grid(row=row, column=column + 1, sticky='w', pady=3)
+        entry.grid(row=row, column=column + 1, sticky='w', pady=1)
         entry.bind('<Return>', lambda _e: self.generate())
 
     def _init_plot(self) -> None:

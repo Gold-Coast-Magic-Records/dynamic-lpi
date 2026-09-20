@@ -82,6 +82,21 @@ class FolderGuiTests(unittest.TestCase):
             self.assertEqual(self.app.var_idx_origin.get(), 'Generated IDX')
             self.assertGreater(len(self.app.result.idx_events), 0)
 
+    def test_preview_parameters_fit_in_two_rows(self):
+        _pump(self.root)
+        columns, rows = self.app.param_frame.grid_size()
+        self.assertLessEqual(rows, 2)
+        texts = []
+        for child in self.app.param_frame.winfo_children():
+            try:
+                value = child.cget('text')
+            except tk.TclError:
+                continue
+            if value:
+                texts.append(str(value))
+        self.assertIn('Two-revolution preview', texts)
+        self.assertIn('LPI LPF Hz', texts)
+
 
 if __name__ == '__main__':
     unittest.main()
