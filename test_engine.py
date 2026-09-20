@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from scipy.io import wavfile
@@ -17,15 +18,21 @@ if str(ROOT) not in sys.path:
 from engine import (
     PreviewConfig,
     analyse,
+    apply_causal_tighten_lowpass,
+    apply_idx_overlay,
     apply_lpi_hysteresis,
     apply_lpi_lowpass,
+    apply_open_lookahead_hold,
     collapse_events,
     forward_max,
+    list_numbered_tracks,
+    lpi_dense_from_events,
     load_wav,
     map_combined_to_lpi,
+    read_idx,
     write_idx,
 )
-from lpi_preview import main as lpi_main
+from lpi_preview import main as lpi_main, resolve_gui_sources
 
 
 def _write_tone_wav(path: Path, sample_rate: int, segments: list[tuple[float, float, float]]) -> None:
@@ -256,6 +263,102 @@ class LookaheadTests(unittest.TestCase):
         self.assertEqual(int(rows[1][1]), 2048)
 
 
+class AsymmetricLookaheadTests(unittest.TestCase):
+    """Open early for upcoming loud audio; do not tighten until that audio has finished."""
+
+    def test_hold_keeps_current_open_when_preview_starts_closing(self):
+        preview = np.array([24000, 20000, 19250, 21000, 24000])
+        current = np.array([24000, 24000, 19250, 19250, 24000])
+        got = apply_open_lookahead_hold(preview, current)
+        np.testing.assert_array_equal(got, [24000, 20000, 19250, 19250, 24000])
+
+    def test_causal_tighten_lags_rise_but_opens_immediately(self):
+        hop_s = 0.02
+        up = np.array([19250.0] * 10 + [24000.0] * 50)
+        got_up = apply_causal_tighten_lowpass(up, hop_s, 0.2)
+        self.assertAlmostEqual(got_up[9], 19250.0)
+        self.assertGreater(got_up[20], 19250.0)
+        self.assertLess(got_up[20], 24000.0)
+        down = np.array([24000.0] * 5 + [19250.0] * 5)
+        got_down = apply_causal_tighten_lowpass(down, hop_s, 0.2)
+        self.assertEqual(got_down[5], 19250.0)
+
+    def _quiet_loud_quiet(self, **config_overrides):
+        sample_rate = 22050
+        rpm = 33.333
+        revolution_s = 60.0 / rpm
+        quiet_before = 5.0
+        loud_s = 8.0
+        values = dict(
+            rpm=rpm,
+            hop_ms=20.0,
+            lpf_hz=500.0,
+            lpi_tight=24000,
+            lpi_open=19250,
+            reference_peak=0.40,
+            quantize=64,
+            min_hold_ms=80.0,
+            slew_ms=0.0,
+            lookahead_revs=1.0,
+            two_rev=True,
+            lpi_lpf_hz=0.0,
+        )
+        values.update(config_overrides)
+        config = PreviewConfig(**values)
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / 'block.wav'
+            _write_tone_wav(
+                wav_path,
+                sample_rate,
+                [
+                    (quiet_before, 100.0, 0.03),
+                    (loud_s, 100.0, 0.85),
+                    (5.0, 100.0, 0.03),
+                ],
+            )
+            result = analyse(load_wav(wav_path), config)
+        loud_at = quiet_before
+        loud_end = quiet_before + loud_s
+        return result, revolution_s, loud_at, loud_end
+
+    def _lpi_at(self, result, time_s: float) -> int:
+        idx = int(np.searchsorted(result.envelope_times, time_s, side='right') - 1)
+        idx = int(np.clip(idx, 0, result.n_hops - 1))
+        return int(result.lpi_dense[idx])
+
+    def test_still_opens_one_revolution_before_loud_in_two_rev_mode(self):
+        result, revolution_s, loud_at, _loud_end = self._quiet_loud_quiet()
+        quiet = self._lpi_at(result, 1.0)
+        into_preview = self._lpi_at(result, loud_at - revolution_s + 0.2)
+        self.assertGreater(quiet, 22000)
+        self.assertLess(into_preview, quiet - 1500)
+
+    def test_does_not_tighten_while_loud_audio_still_playing(self):
+        result, revolution_s, _loud_at, loud_end = self._quiet_loud_quiet()
+        mid_loud = self._lpi_at(result, loud_end - 4.0)
+        still_loud = self._lpi_at(result, loud_end - 0.4)
+        # Following-rev lookahead is already quiet this close to the end;
+        # current audio still needs the open groove.
+        self.assertLess(mid_loud, 20500)
+        self.assertLess(still_loud, mid_loud + 400)
+        self.assertLess(still_loud, 20500)
+
+    def test_tightens_only_after_loud_audio_finishes(self):
+        result, revolution_s, _loud_at, loud_end = self._quiet_loud_quiet()
+        still_loud = self._lpi_at(result, loud_end - 0.25)
+        after = self._lpi_at(result, loud_end + revolution_s + 0.3)
+        self.assertLess(still_loud, 20500)
+        self.assertGreater(after, still_loud + 1500)
+
+    def test_lpi_lpf_does_not_start_tightening_during_loud(self):
+        result, _revolution_s, _loud_at, loud_end = self._quiet_loud_quiet(lpi_lpf_hz=0.2)
+        mid_loud = self._lpi_at(result, loud_end - 4.0)
+        still_loud = self._lpi_at(result, loud_end - 0.4)
+        self.assertLess(mid_loud, 20500)
+        self.assertLess(still_loud, 20500)
+        self.assertLess(still_loud, mid_loud + 600)
+
+
 class CliTests(unittest.TestCase):
     def test_cli_writes_idx_next_to_wav(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -271,6 +374,80 @@ class CliTests(unittest.TestCase):
             self.assertEqual(len(rows[0]), 2)
             float(rows[0][0])
             int(rows[0][1])
+
+
+class NumberedTrackFolderTests(unittest.TestCase):
+    def test_lists_digit_stems_numerically_and_detects_idx(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / '2.wav').write_bytes(b'')
+            (folder / '10.wav').write_bytes(b'')
+            (folder / '1.wav').write_bytes(b'')
+            (folder / '1.idx').write_text('0.000,24000\n')
+            (folder / 'notes.wav').write_bytes(b'')
+            (folder / '1.env.csv').write_text('x')
+            tracks = list_numbered_tracks(folder)
+
+            self.assertEqual([t.number for t in tracks], [1, 2, 10])
+            self.assertTrue(tracks[0].has_idx)
+            self.assertFalse(tracks[1].has_idx)
+            self.assertEqual(tracks[0].wav_path.name, '1.wav')
+            self.assertEqual(tracks[0].idx_path.name, '1.idx')
+
+    def test_read_idx_roundtrip(self):
+        events = [(0.0, 24000), (1.5, 19250)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / '1.idx'
+            write_idx(path, events)
+            self.assertEqual(read_idx(path), events)
+
+    def test_lpi_dense_follows_loaded_events(self):
+        times = np.array([0.0, 0.02, 0.04, 0.06])
+        events = [(0.0, 100), (0.04, 200)]
+        got = lpi_dense_from_events(times, events)
+        np.testing.assert_array_equal(got, [100, 100, 200, 200])
+
+    def test_overlay_replaces_generated_idx(self):
+        from engine import PreviewResult
+        times = np.array([0.0, 0.02, 0.04])
+        result = PreviewResult(
+            config=PreviewConfig(),
+            duration_s=1.0,
+            revolution_s=1.8,
+            hop_s=0.02,
+            envelope_times=times,
+            envelope=np.zeros(3),
+            lookahead=np.zeros(3),
+            combined=np.zeros(3),
+            lpi_dense=np.array([1, 2, 3], dtype=np.int32),
+            idx_events=[(0.0, 1)],
+        )
+        apply_idx_overlay(result, [(0.0, 24000), (0.04, 19250)])
+        self.assertEqual(result.idx_events, [(0.0, 24000), (0.04, 19250)])
+        np.testing.assert_array_equal(result.lpi_dense, [24000, 24000, 19250])
+
+    def test_resolve_gui_sources_treats_directory_as_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            wav = folder / '1.wav'
+            wav.write_bytes(b'')
+            self.assertEqual(resolve_gui_sources(str(folder)), (None, str(folder)))
+            self.assertEqual(resolve_gui_sources(str(wav)), (str(wav), None))
+        self.assertEqual(resolve_gui_sources(None), (None, None))
+
+    def test_main_launches_gui_for_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch('lpi_preview.launch_gui', return_value=0) as launch:
+                rc = lpi_main([tmp])
+            launch.assert_called_once()
+            self.assertEqual(rc, 0)
+
+    def test_main_gui_flag_with_folder_launches_gui(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch('lpi_preview.launch_gui', return_value=0) as launch:
+                rc = lpi_main(['--gui', tmp])
+            launch.assert_called_once()
+            self.assertEqual(rc, 0)
 
 
 if __name__ == '__main__':

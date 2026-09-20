@@ -20,10 +20,13 @@ from engine import (
     PreviewResult,
     WavData,
     analyse,
+    apply_idx_overlay,
     default_env_path,
     default_idx_path,
     downsample_minmax,
+    list_numbered_tracks,
     load_wav,
+    read_idx,
     write_env,
     write_idx,
 )
@@ -63,6 +66,14 @@ def toolbar_blocks_cursor(mode) -> bool:
     return str(mode or '').strip().lower() in _PAN_ZOOM_MODES
 
 
+def idx_origin_label(origin: Optional[str]) -> str:
+    if origin == 'loaded':
+        return 'Loaded IDX'
+    if origin == 'generated':
+        return 'Generated IDX'
+    return ''
+
+
 def _float_var(value: float) -> tk.DoubleVar:
     return tk.DoubleVar(value=value)
 
@@ -72,7 +83,13 @@ def _int_var(value: int) -> tk.IntVar:
 
 
 class LpiPreviewApp:
-    def __init__(self, root: tk.Tk, wav_path: Optional[str] = None, config: Optional[PreviewConfig] = None):
+    def __init__(
+        self,
+        root: tk.Tk,
+        wav_path: Optional[str] = None,
+        folder_path: Optional[str] = None,
+        config: Optional[PreviewConfig] = None,
+    ):
         self.root = root
         self.config = config or PreviewConfig()
         self.wav: Optional[WavData] = None
@@ -80,13 +97,18 @@ class LpiPreviewApp:
         self.cursor_s = 0.0
         self._last_dir = str(Path.home())
         self._generating = False
+        self.tracks = []
+        self.idx_origin: Optional[str] = None
+        self._syncing_list = False
 
         self._build_vars()
         self._build_ui()
         self._init_plot()
 
-        if wav_path:
-            self.root.after(80, lambda: self.open_wav(wav_path, generate=True))
+        if folder_path:
+            self.root.after(80, lambda: self.open_folder(folder_path))
+        elif wav_path:
+            self.root.after(80, lambda: self.open_wav(wav_path))
 
     def _build_vars(self) -> None:
         c = self.config
@@ -105,6 +127,7 @@ class LpiPreviewApp:
         self.var_status = tk.StringVar(value='Open a WAV to generate an LPI preview.')
         self.var_cursor = tk.StringVar(value='t = —')
         self.var_idx_events = tk.StringVar(value='.idx events')
+        self.var_idx_origin = tk.StringVar(value='')
 
     def _build_ui(self) -> None:
         self.root.title('Dynamic LPI Preview')
@@ -132,9 +155,11 @@ class LpiPreviewApp:
         toolbar = ttk.Frame(self.root, padding=(10, 8, 10, 4))
         toolbar.pack(fill='x')
         ttk.Button(toolbar, text='Open WAV…', command=self.browse_wav).pack(side='left')
+        ttk.Button(toolbar, text='Open folder…', command=self.browse_folder).pack(side='left', padx=(8, 0))
         ttk.Button(toolbar, text='Generate', command=self.generate).pack(side='left', padx=(8, 0))
         ttk.Button(toolbar, text='Save .idx…', command=self.save_idx).pack(side='left', padx=(8, 0))
         ttk.Button(toolbar, text='Save .env.csv…', command=self.save_env).pack(side='left', padx=(8, 0))
+        ttk.Label(toolbar, textvariable=self.var_idx_origin, foreground=ACCENT).pack(side='left', padx=(16, 0))
         ttk.Label(toolbar, textvariable=self.var_cursor, foreground=MUTED).pack(side='right')
 
         controls = ttk.LabelFrame(self.root, text='Preview parameters', padding=(10, 6))
@@ -162,11 +187,28 @@ class LpiPreviewApp:
         body = ttk.Frame(self.root)
         body.pack(fill='both', expand=True, padx=10, pady=(0, 6))
 
+        tracks_frame = ttk.Frame(body, width=180)
+        tracks_frame.pack(side='left', fill='y', padx=(0, 8))
+        tracks_frame.pack_propagate(False)
+        ttk.Label(tracks_frame, text='Tracks', foreground=MUTED).pack(anchor='w', pady=(0, 4))
+        self.track_list = tk.Listbox(
+            tracks_frame,
+            bg=PANEL,
+            fg=FG,
+            selectbackground=ACCENT,
+            selectforeground='#111',
+            highlightthickness=0,
+            borderwidth=0,
+            font=('TkDefaultFont', 11),
+        )
+        self.track_list.pack(fill='both', expand=True)
+        self.track_list.bind('<<ListboxSelect>>', self._on_track_select)
+
         plot_frame = ttk.Frame(body)
         plot_frame.pack(side='left', fill='both', expand=True)
 
         import matplotlib
-        matplotlib.use('TkAgg')
+        matplotlib.use('TkAgg', force=True)
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
         from matplotlib.figure import Figure
 
@@ -254,25 +296,103 @@ class LpiPreviewApp:
             filetypes=[('WAV files', '*.wav'), ('All files', '*.*')],
         )
         if path:
-            self.open_wav(path, generate=True)
+            self.open_wav(path)
 
-    def open_wav(self, path: str, generate: bool = True) -> None:
+    def browse_folder(self) -> None:
+        path = filedialog.askdirectory(title='Open folder', initialdir=self._last_dir)
+        if path:
+            self.open_folder(path)
+
+    def open_folder(self, folder: str) -> None:
+        tracks = list_numbered_tracks(folder)
+        if not tracks:
+            messagebox.showinfo('No tracks', f'No 1.wav, 2.wav, … files in:\n{folder}')
+            return
+        self._last_dir = str(Path(folder))
+        self.tracks = tracks
+        self._refresh_track_list()
+        self.open_wav(str(tracks[0].wav_path), from_list=True)
+
+    def open_wav(self, path: str, from_list: bool = False) -> None:
         try:
             self.wav = load_wav(path)
         except Exception as exc:
             messagebox.showerror('WAV error', str(exc))
             return
-        self._last_dir = str(Path(path).parent)
-        self.root.title(f'Dynamic LPI Preview — {Path(path).name}')
-        self.var_status.set(
-            f'Loaded {Path(path).name}: {self.wav.sample_rate} Hz, '
-            f'{self.wav.channels.shape[1]} ch, {self.wav.mid.shape[0] / self.wav.sample_rate:.3f} s'
-        )
-        if generate:
+        wav_path = Path(path)
+        self._last_dir = str(wav_path.parent)
+        self.root.title(f'Dynamic LPI Preview — {wav_path.name}')
+        if not from_list:
+            sibling_tracks = list_numbered_tracks(wav_path.parent)
+            if sibling_tracks:
+                self.tracks = sibling_tracks
+                self._refresh_track_list()
+        self._select_track_in_list(wav_path)
+        idx_path = default_idx_path(path)
+        if idx_path.is_file():
+            self._load_existing_idx(idx_path)
+            return
+        self.generate()
+
+    def _load_existing_idx(self, idx_path: Path) -> None:
+        if self.wav is None:
+            return
+        try:
+            events = read_idx(idx_path)
+            if not events:
+                raise ValueError(f'{idx_path.name} contained no valid events')
+            self.result = analyse(self.wav, self.current_config())
+            apply_idx_overlay(self.result, events)
+        except Exception as exc:
+            messagebox.showerror('IDX error', str(exc))
             self.generate()
-        else:
-            self.result = None
-            self._redraw()
+            return
+        self._set_idx_origin('loaded')
+        self._redraw()
+        self._fill_tree()
+        self.var_status.set(
+            f'Loaded {Path(self.wav.path).name}  ·  {idx_path.name}  ·  '
+            f'{len(self.result.idx_events)} events'
+        )
+        self._update_cursor_label()
+        self._refresh_canvas()
+
+    def _set_idx_origin(self, origin: Optional[str]) -> None:
+        self.idx_origin = origin
+        self.var_idx_origin.set(idx_origin_label(origin))
+
+    def _refresh_track_list(self) -> None:
+        self.track_list.delete(0, tk.END)
+        for track in self.tracks:
+            marker = '  idx' if track.has_idx else ''
+            self.track_list.insert(tk.END, f'{track.wav_path.name}{marker}')
+
+    def _select_track_in_list(self, wav_path: Path) -> None:
+        target = wav_path.resolve()
+        for index, track in enumerate(self.tracks):
+            if track.wav_path.resolve() == target:
+                self._syncing_list = True
+                try:
+                    self.track_list.selection_clear(0, tk.END)
+                    self.track_list.selection_set(index)
+                    self.track_list.see(index)
+                finally:
+                    self._syncing_list = False
+                return
+
+    def _on_track_select(self, _event) -> None:
+        if self._syncing_list:
+            return
+        selection = self.track_list.curselection()
+        if not selection or not self.tracks:
+            return
+        index = int(selection[0])
+        if index < 0 or index >= len(self.tracks):
+            return
+        path = self.tracks[index].wav_path
+        if self.wav is not None and Path(self.wav.path).resolve() == path.resolve():
+            return
+        self.open_wav(str(path), from_list=True)
 
     def generate(self) -> None:
         if self.wav is None:
@@ -296,6 +416,7 @@ class LpiPreviewApp:
                 return
             self._redraw()
             self._fill_tree()
+            self._set_idx_origin('generated')
             self.var_status.set(
                 f'{Path(self.wav.path).name}  ·  {self.result.duration_s:.3f} s  ·  '
                 f'T={self.result.revolution_s:.3f} s  ·  '
@@ -323,6 +444,8 @@ class LpiPreviewApp:
             return
         write_idx(path, self.result.idx_events)
         self.var_status.set(f'Wrote {path} ({len(self.result.idx_events)} events)')
+        if self.tracks:
+            self._refresh_track_list()
 
     def save_env(self) -> None:
         if self.result is None or self.wav is None:
@@ -472,8 +595,12 @@ class LpiPreviewApp:
         self.var_cursor.set('   ·   '.join(parts))
 
 
-def run_gui(wav_path: Optional[str] = None, config: Optional[PreviewConfig] = None) -> int:
+def run_gui(
+    wav_path: Optional[str] = None,
+    folder_path: Optional[str] = None,
+    config: Optional[PreviewConfig] = None,
+) -> int:
     root = tk.Tk()
-    LpiPreviewApp(root, wav_path=wav_path, config=config)
+    LpiPreviewApp(root, wav_path=wav_path, folder_path=folder_path, config=config)
     root.mainloop()
     return 0

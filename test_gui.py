@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from gui import discard_artists, parse_tree_time, toolbar_blocks_cursor
+from gui import discard_artists, idx_origin_label, parse_tree_time, toolbar_blocks_cursor
 from matplotlib.figure import Figure
 
 
@@ -63,6 +63,12 @@ class GuiHelperTests(unittest.TestCase):
         self.assertIsNone(parse_tree_time(('','2048')))
         self.assertIsNone(parse_tree_time(()))
         self.assertIsNone(parse_tree_time(None))
+
+    def test_idx_origin_label(self):
+        self.assertEqual(idx_origin_label('loaded'), 'Loaded IDX')
+        self.assertEqual(idx_origin_label('generated'), 'Generated IDX')
+        self.assertEqual(idx_origin_label(None), '')
+        self.assertEqual(idx_origin_label(''), '')
 
 
 if __name__ == '__main__':

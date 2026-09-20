@@ -3,6 +3,8 @@ WAV → variable-LPI preview.
 
 Groove width is dominated by low-frequency lateral displacement. Adjacent grooves
 share a wall, so pitch must open one revolution *before* a loud passage arrives.
+Tightening is the opposite: stay at the more-open LPI until the current audio
+no longer needs it, then ramp closed. Lookahead never pulls LPI tighter.
 
 At 33⅓ RPM one revolution is 1.800 s. That duration is the lookahead window, not
 the analysis bin size: the envelope is computed at ~20 ms hops, then a sliding
@@ -15,6 +17,7 @@ G2 L values: higher L = slower carriage = tighter pitch.
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Sequence, Tuple
@@ -25,6 +28,18 @@ from scipy.io import wavfile
 from scipy.signal import butter, sosfiltfilt
 
 IdxEvent = Tuple[float, int]
+_NUMBERED_WAV = re.compile(r'^(\d+)\.wav$', re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class NumberedTrack:
+    number: int
+    wav_path: Path
+    idx_path: Path
+
+    @property
+    def has_idx(self) -> bool:
+        return self.idx_path.is_file()
 
 
 @dataclass
@@ -140,7 +155,18 @@ def forward_max(values: np.ndarray, window: int, offset: int = 0) -> np.ndarray:
     return sliding_window_view(padded, window)[:n].max(axis=1).astype(values.dtype, copy=False)
 
 
-def map_combined_to_lpi(combined: np.ndarray, config: PreviewConfig) -> np.ndarray:
+def mapping_denom(combined: np.ndarray, config: PreviewConfig) -> float:
+    """Scale for envelope+lookahead (~0..2 * peak). Shared so 'now' uses the same map."""
+    ref_scale = 2.0 * max(config.reference_peak, 1e-6)
+    peak = float(np.max(combined)) if combined.size else 0.0
+    return min(max(peak, 1e-6), ref_scale)
+
+
+def map_combined_to_lpi(
+    combined: np.ndarray,
+    config: PreviewConfig,
+    denom: float | None = None,
+) -> np.ndarray:
     tight = float(config.lpi_tight)
     open_l = float(config.lpi_open)
     lo = min(tight, open_l)
@@ -149,12 +175,39 @@ def map_combined_to_lpi(combined: np.ndarray, config: PreviewConfig) -> np.ndarr
     # both sides saturates to fully open. If this track never reaches that,
     # stretch so the actual peak becomes Open LPI and Tight stays put —
     # a range fit, not a DC offset of the whole curve.
-    ref_scale = 2.0 * max(config.reference_peak, 1e-6)
-    peak = float(np.max(combined)) if combined.size else 0.0
-    denom = min(max(peak, 1e-6), ref_scale)
+    if denom is None:
+        denom = mapping_denom(combined, config)
     norm = np.clip(combined / denom, 0.0, 1.0)
     lpi = tight - norm * (tight - open_l)
     return np.clip(lpi, lo, hi)
+
+
+def apply_open_lookahead_hold(preview: np.ndarray, current: np.ndarray) -> np.ndarray:
+    """More-open (lower LPI) of lookahead preview vs what current audio still needs."""
+    return np.minimum(
+        np.asarray(preview, dtype=np.float64),
+        np.asarray(current, dtype=np.float64),
+    )
+
+
+def apply_causal_tighten_lowpass(
+    lpi: np.ndarray,
+    hop_s: float,
+    cutoff_hz: float,
+) -> np.ndarray:
+    """Follow openings immediately; one-pole-smooth only while LPI is rising (tightening)."""
+    if lpi.size < 2 or hop_s <= 0 or cutoff_hz <= 0:
+        return lpi
+    alpha = float(1.0 - np.exp(-2.0 * np.pi * cutoff_hz * hop_s))
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    target = np.asarray(lpi, dtype=np.float64)
+    out = target.copy()
+    for i in range(1, out.shape[0]):
+        if target[i] <= out[i - 1]:
+            out[i] = target[i]
+        else:
+            out[i] = out[i - 1] + alpha * (target[i] - out[i - 1])
+    return out
 
 
 def apply_lpi_lowpass(
@@ -271,9 +324,16 @@ def analyse(wav: WavData, config: PreviewConfig | None = None) -> PreviewResult:
         lookahead = forward_max(envelope, win, offset=0)
         combined = envelope + lookahead
 
-    lpi = map_combined_to_lpi(combined, config)
+    denom = mapping_denom(combined, config)
+    lpi_preview = map_combined_to_lpi(combined, config, denom=denom)
+    # Same 0..2*peak scale as combined: current level in both sum slots.
+    lpi_now = map_combined_to_lpi(np.asarray(envelope, dtype=np.float64) * 2.0, config, denom=denom)
+    lpi = apply_open_lookahead_hold(lpi_preview, lpi_now)
     lpi = apply_lpi_lowpass(lpi, hop_s, config.lpi_lpf_hz)
+    lpi = apply_open_lookahead_hold(lpi, lpi_now)
+    lpi = apply_causal_tighten_lowpass(lpi, hop_s, config.lpi_lpf_hz)
     lpi = apply_slew(lpi, hop_s, config.slew_ms, float(config.lpi_tight - config.lpi_open))
+    lpi = apply_open_lookahead_hold(lpi, lpi_now)
     lo = min(config.lpi_tight, config.lpi_open)
     hi = max(config.lpi_tight, config.lpi_open)
     lpi = np.clip(lpi, lo, hi)
@@ -303,6 +363,58 @@ def write_idx(path: str | Path, events: Sequence[IdxEvent]) -> None:
         writer = csv.writer(handle)
         for time_s, lpi in events:
             writer.writerow([f'{time_s:.3f}', int(lpi)])
+
+
+def read_idx(path: str | Path) -> List[IdxEvent]:
+    events: List[IdxEvent] = []
+    with Path(path).open('r', newline='') as handle:
+        reader = csv.reader(handle)
+        for row in reader:
+            if len(row) < 2:
+                continue
+            try:
+                events.append((float(row[0]), int(float(row[1]))))
+            except (TypeError, ValueError):
+                continue
+    events.sort(key=lambda item: item[0])
+    return events
+
+
+def lpi_dense_from_events(times: np.ndarray, events: Sequence[IdxEvent]) -> np.ndarray:
+    if times.size == 0:
+        return np.zeros(0, dtype=np.int32)
+    if not events:
+        return np.zeros(int(times.shape[0]), dtype=np.int32)
+    event_t = np.array([e[0] for e in events], dtype=np.float64)
+    event_l = np.array([e[1] for e in events], dtype=np.int32)
+    indexes = np.searchsorted(event_t, times, side='right') - 1
+    indexes = np.clip(indexes, 0, event_l.shape[0] - 1)
+    return event_l[indexes]
+
+
+def apply_idx_overlay(result: PreviewResult, events: Sequence[IdxEvent]) -> PreviewResult:
+    result.idx_events = list(events)
+    result.lpi_dense = lpi_dense_from_events(result.envelope_times, result.idx_events)
+    return result
+
+
+def list_numbered_tracks(folder: str | Path) -> List[NumberedTrack]:
+    folder = Path(folder)
+    tracks: List[NumberedTrack] = []
+    if not folder.is_dir():
+        return tracks
+    for path in folder.iterdir():
+        match = _NUMBERED_WAV.match(path.name)
+        if not match or not path.is_file():
+            continue
+        number = int(match.group(1))
+        tracks.append(NumberedTrack(
+            number=number,
+            wav_path=path,
+            idx_path=path.with_suffix('.idx'),
+        ))
+    tracks.sort(key=lambda item: item.number)
+    return tracks
 
 
 def write_env(path: str | Path, result: PreviewResult) -> None:

@@ -7,8 +7,8 @@ CLI (batch / programmatic):
     python lpi_preview.py track.wav -o track.idx --rpm 33.333 --lpi-tight 24000 --lpi-open 19250
 
 GUI (debug the waveform against the peak / LPI curve):
-    python lpi_preview.py --gui
-    python lpi_preview.py track.wav --gui
+    python lpi_preview.py --gui /path/to/Side/A
+    python lpi_preview.py /path/to/Side/A
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog='With no WAV (or with --gui) the debug plotter opens. '
                'The .idx format is seconds,lpi with no header, matching LpiManager.',
     )
-    parser.add_argument('wav', nargs='?', help='Input WAV path')
+    parser.add_argument('path', nargs='?', help='Input WAV path, or a folder of 1.wav / 2.wav / … for the GUI')
     parser.add_argument('--gui', action='store_true', help='Open the waveform / LPI debug GUI')
     parser.add_argument('-o', '--output', help='Output .idx path (default: alongside the WAV)')
     parser.add_argument('--write-env', action='store_true', help='Also write a dense envelope CSV for inspection')
@@ -104,23 +104,36 @@ def convert_wav(wav_path: str, args: argparse.Namespace) -> Path:
     return idx_path
 
 
+def resolve_gui_sources(path: str | None) -> tuple[str | None, str | None]:
+    """Return (wav_path, folder_path) for GUI launch."""
+    if not path:
+        return None, None
+    resolved = Path(path)
+    if resolved.is_dir():
+        return None, str(resolved)
+    return str(resolved), None
+
+
 def launch_gui(args: argparse.Namespace) -> int:
     from gui import run_gui
-    return run_gui(wav_path=args.wav, config=config_from_args(args))
+    wav_path, folder_path = resolve_gui_sources(args.path)
+    return run_gui(wav_path=wav_path, folder_path=folder_path, config=config_from_args(args))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.gui or not args.wav:
+    path = Path(args.path) if args.path else None
+    if path is not None and path.is_dir():
+        return launch_gui(args)
+    if args.gui or path is None:
         return launch_gui(args)
 
-    wav_path = Path(args.wav)
-    if not wav_path.is_file():
-        parser.error(f'WAV not found: {wav_path}')
+    if not path.is_file():
+        parser.error(f'WAV not found: {path}')
 
-    convert_wav(str(wav_path), args)
+    convert_wav(str(path), args)
     return 0
 
 
