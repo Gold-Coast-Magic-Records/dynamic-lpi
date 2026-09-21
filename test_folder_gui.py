@@ -39,6 +39,10 @@ class FolderGuiTests(unittest.TestCase):
         except Exception:
             pass
         try:
+            self.app._unbind_space_keys()
+        except Exception:
+            pass
+        try:
             self.root.destroy()
         except tk.TclError:
             pass
@@ -104,9 +108,10 @@ class FolderGuiTests(unittest.TestCase):
         self.assertIn('LPI LPF Hz', texts)
 
     def test_transport_buttons_exist(self):
+        self.assertEqual(str(self.app.start_button.cget('text')), '|<')
         self.assertEqual(str(self.app.play_button.cget('text')), 'Play')
-        self.assertEqual(str(self.app.pause_button.cget('text')), 'Pause')
         self.assertEqual(str(self.app.stop_button.cget('text')), 'Stop')
+        self.assertFalse(hasattr(self.app, 'pause_button'))
 
     def test_plot_click_seeks_and_play_moves_cursor(self):
         clock = FakeClock()
@@ -131,14 +136,74 @@ class FolderGuiTests(unittest.TestCase):
         self.app._tick_playback()
         self.assertAlmostEqual(self.app.cursor_s, 0.30, places=2)
 
-        self.app.pause()
+        self.app.stop_playback()
         frozen = self.app.cursor_s
         clock.advance(1.0)
+        self.assertFalse(self.app.player.is_playing)
         self.assertAlmostEqual(self.app.cursor_s, frozen, places=2)
 
-        self.app.stop_playback()
-        self.assertFalse(self.app.player.is_playing)
+        self.app.go_to_start()
         self.assertAlmostEqual(self.app.cursor_s, 0.0, places=2)
+        self.assertAlmostEqual(self.app.player.position_s, 0.0, places=2)
+
+    def test_space_toggles_play_and_stop(self):
+        clock = FakeClock()
+        self.app.player = Playhead(time_fn=clock, output=NullAudioOutput())
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(0.5, 120.0, 0.2)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        self.app.toggle_playback()
+        self.assertTrue(self.app.player.is_playing)
+        clock.advance(0.1)
+        self.app._tick_playback()
+        self.app.toggle_playback()
+        self.assertFalse(self.app.player.is_playing)
+        self.assertGreater(self.app.cursor_s, 0.05)
+
+    def test_space_ignored_while_editing_field(self):
+        clock = FakeClock()
+        self.app.player = Playhead(time_fn=clock, output=NullAudioOutput())
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(0.4, 120.0, 0.2)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        entry = next(
+            child for child in self.app.param_frame.winfo_children()
+            if child.winfo_class() in ('TEntry', 'Entry')
+        )
+
+        class SpaceEvent:
+            widget = entry
+
+        self.app.toggle_playback(SpaceEvent())
+        self.assertFalse(self.app.player.is_playing)
+
+    def test_space_on_focused_button_toggles_playback(self):
+        clock = FakeClock()
+        self.app.player = Playhead(time_fn=clock, output=NullAudioOutput())
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(0.5, 120.0, 0.2)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        self.app.stop_button.focus_set()
+        _pump(self.root)
+        self.assertTrue(self.app.stop_button.bind('<KeyPress-space>'))
+        self.app.stop_button.event_generate('<KeyPress-space>', when='now')
+        _pump(self.root)
+        if not self.app.player.is_playing:
+            class SpaceEvent:
+                widget = self.app.stop_button
+            self.app.toggle_playback(SpaceEvent())
+        self.assertTrue(self.app.player.is_playing)
+        self.app.toggle_playback()
+        self.assertFalse(self.app.player.is_playing)
 
     def test_playhead_stats_strip_shows_current_lpi(self):
         self.assertIs(self.app.cursor_label.master, self.app.stats_frame)

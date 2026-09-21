@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from gui import discard_artists, idx_origin_label, parse_tree_time, toolbar_blocks_cursor
+from gui import discard_artists, focus_blocks_space, idx_origin_label, parse_tree_time, toolbar_blocks_cursor
 from matplotlib.figure import Figure
 
 
@@ -69,6 +69,23 @@ class GuiHelperTests(unittest.TestCase):
         self.assertEqual(idx_origin_label('generated'), 'Generated IDX')
         self.assertEqual(idx_origin_label(None), '')
         self.assertEqual(idx_origin_label(''), '')
+
+    def test_space_is_blocked_only_in_value_fields(self):
+        class Widget:
+            def __init__(self, cls):
+                self._cls = cls
+
+            def winfo_class(self):
+                return self._cls
+
+        self.assertFalse(focus_blocks_space(None))
+        self.assertFalse(focus_blocks_space(Widget('TButton')))
+        self.assertFalse(focus_blocks_space(Widget('Listbox')))
+        self.assertFalse(focus_blocks_space(Widget('Treeview')))
+        self.assertTrue(focus_blocks_space(Widget('TEntry')))
+        self.assertTrue(focus_blocks_space(Widget('Entry')))
+        self.assertTrue(focus_blocks_space(Widget('Text')))
+        self.assertTrue(focus_blocks_space(Widget('TCombobox')))
 
 
 if __name__ == '__main__':

@@ -40,6 +40,8 @@ MUTED = '#9aa0a6'
 ACCENT = '#c9a227'
 
 _PAN_ZOOM_MODES = {'pan/zoom', 'zoom rect', 'pan', 'zoom'}
+_VALUE_FIELD_CLASSES = {'Entry', 'TEntry', 'Text', 'TCombobox', 'Spinbox', 'TSpinbox'}
+_BUTTON_SPACE_CLASSES = ('TButton', 'Button', 'TCheckbutton', 'Checkbutton')
 
 
 def discard_artists(artists) -> list:
@@ -65,6 +67,17 @@ def parse_tree_time(values) -> Optional[float]:
 
 def toolbar_blocks_cursor(mode) -> bool:
     return str(mode or '').strip().lower() in _PAN_ZOOM_MODES
+
+
+def focus_blocks_space(widget) -> bool:
+    """Space types into value fields; everywhere else it toggles playback."""
+    if widget is None:
+        return False
+    try:
+        cls = str(widget.winfo_class())
+    except Exception:
+        return False
+    return cls in _VALUE_FIELD_CLASSES
 
 
 def idx_origin_label(origin: Optional[str]) -> str:
@@ -105,11 +118,13 @@ class LpiPreviewApp:
         self._playback_after = None
         self._cursor_lines = []
         self._plot_bg = None
+        self._saved_button_space_binds = {}
 
         self._build_vars()
         self._build_ui()
         self._init_plot()
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
+        self._bind_space_keys()
 
         if folder_path:
             self.root.after(80, lambda: self.open_folder(folder_path))
@@ -167,10 +182,10 @@ class LpiPreviewApp:
         ttk.Button(toolbar, text='Generate', command=self.generate).pack(side='left', padx=(8, 0))
         ttk.Button(toolbar, text='Save .idx…', command=self.save_idx).pack(side='left', padx=(8, 0))
         ttk.Button(toolbar, text='Save .env.csv…', command=self.save_env).pack(side='left', padx=(8, 0))
+        self.start_button = ttk.Button(toolbar, text='|<', command=self.go_to_start, width=3)
+        self.start_button.pack(side='left', padx=(16, 0))
         self.play_button = ttk.Button(toolbar, text='Play', command=self.play)
-        self.play_button.pack(side='left', padx=(16, 0))
-        self.pause_button = ttk.Button(toolbar, text='Pause', command=self.pause)
-        self.pause_button.pack(side='left', padx=(8, 0))
+        self.play_button.pack(side='left', padx=(8, 0))
         self.stop_button = ttk.Button(toolbar, text='Stop', command=self.stop_playback)
         self.stop_button.pack(side='left', padx=(8, 0))
         ttk.Label(toolbar, textvariable=self.var_idx_origin, foreground=ACCENT).pack(side='left', padx=(16, 0))
@@ -354,18 +369,81 @@ class LpiPreviewApp:
         self._sync_playhead_visual()
         self._schedule_playback_ticks()
 
-    def pause(self) -> None:
+    def stop_playback(self) -> None:
         if self.player.is_playing:
             self.player.pause()
         self.cursor_s = self.player.position_s
         self._cancel_playback_ticks()
         self._sync_playhead_visual()
 
-    def stop_playback(self) -> None:
-        self.player.stop()
-        self.cursor_s = 0.0
-        self._cancel_playback_ticks()
-        self._sync_playhead_visual()
+    def go_to_start(self) -> None:
+        self._seek_to(0.0)
+
+    def toggle_playback(self, event=None):
+        target = getattr(event, 'widget', None) if event is not None else None
+        if target is None:
+            target = self.root.focus_get()
+        if focus_blocks_space(target):
+            return
+        if self.player.is_playing:
+            self.stop_playback()
+        else:
+            self.play()
+        self._release_button_focus()
+        return 'break'
+
+    def _bind_space_keys(self) -> None:
+        self.root.bind_all('<space>', self.toggle_playback)
+        self.root.bind_all('<KeyPress-space>', self.toggle_playback)
+        for cls in _BUTTON_SPACE_CLASSES:
+            self._saved_button_space_binds[cls] = {
+                'space': self.root.bind_class(cls, '<space>'),
+                'keypress': self.root.bind_class(cls, '<KeyPress-space>'),
+            }
+            self.root.bind_class(cls, '<space>', self.toggle_playback)
+            self.root.bind_class(cls, '<KeyPress-space>', self.toggle_playback)
+            self.root.bind_class(cls, '<ButtonRelease-1>', self._release_button_focus, add='+')
+        self._hook_button_space(self.root)
+
+    def _hook_button_space(self, widget) -> None:
+        try:
+            cls = str(widget.winfo_class())
+        except Exception:
+            return
+        if cls in _BUTTON_SPACE_CLASSES:
+            widget.bind('<space>', self.toggle_playback)
+            widget.bind('<KeyPress-space>', self.toggle_playback)
+            widget.bind('<ButtonRelease-1>', self._release_button_focus, add='+')
+            try:
+                widget.configure(takefocus=False)
+            except tk.TclError:
+                pass
+        try:
+            children = widget.winfo_children()
+        except Exception:
+            return
+        for child in children:
+            self._hook_button_space(child)
+
+    def _release_button_focus(self, _event=None):
+        try:
+            self.root.after_idle(self.root.focus_set)
+        except Exception:
+            pass
+
+    def _unbind_space_keys(self) -> None:
+        try:
+            self.root.unbind_all('<space>')
+            self.root.unbind_all('<KeyPress-space>')
+        except Exception:
+            pass
+        for cls, prev in self._saved_button_space_binds.items():
+            try:
+                self.root.bind_class(cls, '<space>', prev.get('space') or '')
+                self.root.bind_class(cls, '<KeyPress-space>', prev.get('keypress') or '')
+            except Exception:
+                pass
+        self._saved_button_space_binds = {}
 
     def _seek_to(self, time_s: float) -> None:
         if self.wav is None:
@@ -409,6 +487,7 @@ class LpiPreviewApp:
 
     def _on_close(self) -> None:
         self._cancel_playback_ticks()
+        self._unbind_space_keys()
         try:
             self.player.stop()
         except Exception:
