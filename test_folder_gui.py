@@ -111,6 +111,8 @@ class FolderGuiTests(unittest.TestCase):
         self.assertEqual(str(self.app.start_button.cget('text')), '|<')
         self.assertEqual(str(self.app.play_button.cget('text')), 'Play')
         self.assertEqual(str(self.app.stop_button.cget('text')), 'Stop')
+        self.assertEqual(str(self.app.zoom_in_button.cget('text')), 'Zoom +')
+        self.assertEqual(str(self.app.zoom_out_button.cget('text')), 'Zoom −')
         self.assertFalse(hasattr(self.app, 'pause_button'))
 
     def test_plot_click_seeks_and_play_moves_cursor(self):
@@ -219,6 +221,42 @@ class FolderGuiTests(unittest.TestCase):
 
     def test_tracks_column_is_narrow(self):
         self.assertLessEqual(int(str(self.app.tracks_frame.cget('width'))), 120)
+
+    def test_zoom_in_centers_on_playhead(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(1.0, 120.0, 0.2)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+        self.app.cursor_s = 0.4
+        self.app.zoom_in()
+        x0, x1 = self.app.ax_wave.get_xlim()
+        self.assertLess(x1 - x0, 0.8)
+        self.assertGreaterEqual(x0, -1e-6)
+        self.assertLessEqual(x1, 1.0 + 1e-6)
+        self.assertLessEqual(x0, 0.4)
+        self.assertGreaterEqual(x1, 0.4)
+
+    def test_follow_keeps_playhead_in_view_and_pins_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(2.0, 120.0, 0.2)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+        self.app.cursor_s = 0.5
+        self.app.zoom_in()
+        span = self.app._view_xlim[1] - self.app._view_xlim[0]
+        self.app.cursor_s = 1.6
+        self.app._follow_playhead_view()
+        x0, x1 = self.app.ax_wave.get_xlim()
+        self.assertLessEqual(x0, 1.6)
+        self.assertGreaterEqual(x1, 1.6)
+        self.assertAlmostEqual(x1, 2.0, places=2)
+        self.app.cursor_s = 0.05
+        self.app._follow_playhead_view()
+        x0, x1 = self.app.ax_wave.get_xlim()
+        self.assertAlmostEqual(x0, 0.0, places=2)
+        self.assertAlmostEqual(x1 - x0, span, places=2)
 
 
 if __name__ == '__main__':

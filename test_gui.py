@@ -13,7 +13,15 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from gui import discard_artists, focus_blocks_space, idx_origin_label, parse_tree_time, toolbar_blocks_cursor
+from gui import (
+    discard_artists,
+    focus_blocks_space,
+    idx_origin_label,
+    parse_tree_time,
+    toolbar_blocks_cursor,
+    zoom_xlim,
+    follow_xlim,
+)
 from matplotlib.figure import Figure
 
 
@@ -86,6 +94,27 @@ class GuiHelperTests(unittest.TestCase):
         self.assertTrue(focus_blocks_space(Widget('Entry')))
         self.assertTrue(focus_blocks_space(Widget('Text')))
         self.assertTrue(focus_blocks_space(Widget('TCombobox')))
+
+    def test_zoom_xlim_centers_on_cursor_and_clamps(self):
+        start, end = zoom_xlim(center=5.0, x0=0.0, x1=10.0, duration=10.0, factor=2.0)
+        self.assertAlmostEqual(end - start, 5.0)
+        self.assertAlmostEqual((start + end) / 2.0, 5.0)
+        start, end = zoom_xlim(center=0.2, x0=0.0, x1=10.0, duration=10.0, factor=2.0)
+        self.assertAlmostEqual(start, 0.0)
+        self.assertAlmostEqual(end, 5.0)
+        start, end = zoom_xlim(center=5.0, x0=2.5, x1=7.5, duration=10.0, factor=0.5)
+        self.assertAlmostEqual(start, 0.0)
+        self.assertAlmostEqual(end, 10.0)
+
+    def test_follow_xlim_pins_start_and_end_otherwise_centers(self):
+        self.assertEqual(follow_xlim(0.5, 4.0, 20.0), (0.0, 4.0))
+        start, end = follow_xlim(10.0, 4.0, 20.0)
+        self.assertAlmostEqual(start, 8.0)
+        self.assertAlmostEqual(end, 12.0)
+        start, end = follow_xlim(19.0, 4.0, 20.0)
+        self.assertAlmostEqual(start, 16.0)
+        self.assertAlmostEqual(end, 20.0)
+        self.assertEqual(follow_xlim(10.0, 20.0, 20.0), (0.0, 20.0))
 
 
 if __name__ == '__main__':

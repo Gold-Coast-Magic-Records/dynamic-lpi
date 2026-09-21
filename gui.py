@@ -65,6 +65,56 @@ def parse_tree_time(values) -> Optional[float]:
         return None
 
 
+def zoom_xlim(
+    center: float,
+    x0: float,
+    x1: float,
+    duration: float,
+    factor: float,
+    min_span: float = 0.05,
+) -> tuple[float, float]:
+    """Return a new x window zoomed by factor around center.
+
+    factor > 1 zooms in (narrower); 0 < factor < 1 zooms out. The window is
+    clamped to [0, duration] and never narrower than min_span.
+    """
+    duration = max(float(duration), min_span)
+    span = max(float(x1) - float(x0), min_span)
+    if factor <= 0:
+        new_span = duration
+    else:
+        new_span = span / float(factor)
+    new_span = min(max(new_span, min_span), duration)
+    half = new_span / 2.0
+    center = min(max(float(center), 0.0), duration)
+    start = center - half
+    end = center + half
+    if start < 0.0:
+        end -= start
+        start = 0.0
+    if end > duration:
+        start -= end - duration
+        end = duration
+    start = max(0.0, start)
+    end = min(duration, max(end, start + min_span * 0.5))
+    if end - start > duration:
+        return 0.0, duration
+    return start, end
+
+
+def follow_xlim(center: float, span: float, duration: float) -> tuple[float, float]:
+    """Keep the playhead in view: centered, except pinned at the file start/end."""
+    duration = max(float(duration), 1e-6)
+    span = min(max(float(span), 1e-6), duration)
+    half = span / 2.0
+    center = min(max(float(center), 0.0), duration)
+    if center <= half:
+        return 0.0, span
+    if center >= duration - half:
+        return duration - span, duration
+    return center - half, center + half
+
+
 def toolbar_blocks_cursor(mode) -> bool:
     return str(mode or '').strip().lower() in _PAN_ZOOM_MODES
 
@@ -119,6 +169,7 @@ class LpiPreviewApp:
         self._cursor_lines = []
         self._plot_bg = None
         self._saved_button_space_binds = {}
+        self._view_xlim = None
 
         self._build_vars()
         self._build_ui()
@@ -188,6 +239,10 @@ class LpiPreviewApp:
         self.play_button.pack(side='left', padx=(8, 0))
         self.stop_button = ttk.Button(toolbar, text='Stop', command=self.stop_playback)
         self.stop_button.pack(side='left', padx=(8, 0))
+        self.zoom_out_button = ttk.Button(toolbar, text='Zoom −', command=self.zoom_out)
+        self.zoom_out_button.pack(side='left', padx=(16, 0))
+        self.zoom_in_button = ttk.Button(toolbar, text='Zoom +', command=self.zoom_in)
+        self.zoom_in_button.pack(side='left', padx=(8, 0))
         ttk.Label(toolbar, textvariable=self.var_idx_origin, foreground=ACCENT).pack(side='left', padx=(16, 0))
 
         stats = ttk.Frame(self.root, padding=(10, 0, 10, 2))
@@ -263,6 +318,7 @@ class LpiPreviewApp:
         self.plot_toolbar.pack(side='bottom', fill='x')
         self.canvas.get_tk_widget().pack(side='top', fill='both', expand=True)
         self.canvas.mpl_connect('button_press_event', self._on_plot_click)
+        self.canvas.mpl_connect('scroll_event', self._on_scroll_zoom)
         self.canvas.mpl_connect('resize_event', lambda _e: setattr(self, '_plot_bg', None))
         self.cursor_artists = []
         self._cursor_lines = []
@@ -379,6 +435,83 @@ class LpiPreviewApp:
     def go_to_start(self) -> None:
         self._seek_to(0.0)
 
+    def _wav_duration(self) -> float:
+        if self.wav is None:
+            return 0.0
+        return self.wav.mid.shape[0] / float(self.wav.sample_rate)
+
+    def _apply_view_xlim(self) -> None:
+        duration = max(self._wav_duration(), 0.001)
+        if self._view_xlim is None:
+            self.ax_wave.set_xlim(0.0, duration)
+            return
+        x0, x1 = self._view_xlim
+        x0 = min(max(float(x0), 0.0), duration)
+        x1 = min(max(float(x1), x0 + 0.001), duration)
+        self.ax_wave.set_xlim(x0, x1)
+
+    def zoom_in(self, factor: float = 2.0) -> None:
+        self._zoom_at_cursor(factor)
+
+    def zoom_out(self, factor: float = 0.5) -> None:
+        self._zoom_at_cursor(factor)
+
+    def _zoom_at_cursor(self, factor: float) -> None:
+        duration = self._wav_duration()
+        if duration <= 0:
+            return
+        if self._view_xlim is None:
+            x0, x1 = 0.0, duration
+        else:
+            x0, x1 = self._view_xlim
+        x0, x1 = zoom_xlim(self.cursor_s, x0, x1, duration, factor)
+        if abs(x1 - x0 - duration) < 1e-6 and x0 <= 1e-6:
+            self._view_xlim = None
+        else:
+            self._view_xlim = (x0, x1)
+        self._apply_view_xlim()
+        self._draw_cursor()
+        self._refresh_canvas()
+
+    def _follow_playhead_view(self) -> bool:
+        """Pan a zoomed view so the playhead stays in the middle, pinned at the ends."""
+        if self._view_xlim is None or self.wav is None:
+            return False
+        duration = self._wav_duration()
+        if duration <= 0:
+            return False
+        span = self._view_xlim[1] - self._view_xlim[0]
+        x0, x1 = follow_xlim(self.cursor_s, span, duration)
+        old0, old1 = self._view_xlim
+        if abs(x0 - old0) < 1e-4 and abs(x1 - old1) < 1e-4:
+            return False
+        self._view_xlim = (x0, x1)
+        self._apply_view_xlim()
+        self._draw_cursor()
+        self._refresh_canvas()
+        return True
+
+    def _on_zoom_in_key(self, event=None):
+        if focus_blocks_space(getattr(event, 'widget', None) if event is not None else self.root.focus_get()):
+            return
+        self.zoom_in()
+        return 'break'
+
+    def _on_zoom_out_key(self, event=None):
+        if focus_blocks_space(getattr(event, 'widget', None) if event is not None else self.root.focus_get()):
+            return
+        self.zoom_out()
+        return 'break'
+
+    def _on_scroll_zoom(self, event) -> None:
+        if event.inaxes is None:
+            return
+        step = getattr(event, 'step', 0) or 0
+        if event.button == 'up' or step > 0:
+            self.zoom_in(1.25)
+        else:
+            self.zoom_out(0.8)
+
     def toggle_playback(self, event=None):
         target = getattr(event, 'widget', None) if event is not None else None
         if target is None:
@@ -404,6 +537,14 @@ class LpiPreviewApp:
             self.root.bind_class(cls, '<KeyPress-space>', self.toggle_playback)
             self.root.bind_class(cls, '<ButtonRelease-1>', self._release_button_focus, add='+')
         self._hook_button_space(self.root)
+        for sequence, handler in (
+            ('<plus>', self._on_zoom_in_key),
+            ('<equal>', self._on_zoom_in_key),
+            ('<KP_Add>', self._on_zoom_in_key),
+            ('<minus>', self._on_zoom_out_key),
+            ('<KP_Subtract>', self._on_zoom_out_key),
+        ):
+            self.root.bind_all(sequence, handler)
 
     def _hook_button_space(self, widget) -> None:
         try:
@@ -435,6 +576,8 @@ class LpiPreviewApp:
         try:
             self.root.unbind_all('<space>')
             self.root.unbind_all('<KeyPress-space>')
+            for sequence in ('<plus>', '<equal>', '<KP_Add>', '<minus>', '<KP_Subtract>'):
+                self.root.unbind_all(sequence)
         except Exception:
             pass
         for cls, prev in self._saved_button_space_binds.items():
@@ -454,6 +597,8 @@ class LpiPreviewApp:
         if self.player.samples is not None:
             self.player.seek(t)
         self._update_cursor_label()
+        if self._follow_playhead_view():
+            return
         if self.player.is_playing and self._cursor_lines:
             self._blit_playhead()
         else:
@@ -462,6 +607,8 @@ class LpiPreviewApp:
 
     def _sync_playhead_visual(self) -> None:
         self._update_cursor_label()
+        if self._follow_playhead_view():
+            return
         self._draw_cursor()
         self._refresh_canvas()
 
@@ -481,7 +628,8 @@ class LpiPreviewApp:
         self._playback_after = None
         self.cursor_s = self.player.position_s
         self._update_cursor_label()
-        self._blit_playhead()
+        if not self._follow_playhead_view():
+            self._blit_playhead()
         if self.player.is_playing:
             self._playback_after = self.root.after(80, self._tick_playback)
 
@@ -513,6 +661,7 @@ class LpiPreviewApp:
         wav_path = Path(path)
         self._cancel_playback_ticks()
         self.cursor_s = 0.0
+        self._view_xlim = None
         self.player.load(self.wav.channels, self.wav.sample_rate)
         self._last_dir = str(wav_path.parent)
         self.root.title(f'Dynamic LPI Preview — {wav_path.name}')
@@ -719,7 +868,7 @@ class LpiPreviewApp:
 
         times, mins, maxs = downsample_minmax(self.wav.mid, self.wav.sample_rate)
         self.ax_wave.fill_between(times, mins, maxs, color='#6ea8c9', linewidth=0, alpha=0.9)
-        self.ax_wave.set_xlim(0, max(self.wav.mid.shape[0] / self.wav.sample_rate, 0.001))
+        self._apply_view_xlim()
 
         if self.result is not None:
             t = self.result.envelope_times
