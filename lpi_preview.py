@@ -111,7 +111,12 @@ def resolve_gui_sources(path: str | None) -> tuple[str | None, str | None]:
     resolved = Path(path)
     if resolved.is_dir():
         return None, str(resolved)
-    return str(resolved), None
+    suffix = resolved.suffix.lower()
+    if suffix in {'.wav', '.wave'}:
+        return str(resolved), None
+    # Side folders such as …/Disc/A/Side/A must not be opened as WAV files,
+    # even when is_dir() is false (stale path, or CLI parsed before mount).
+    return None, str(resolved)
 
 
 def launch_gui(args: argparse.Namespace) -> int:

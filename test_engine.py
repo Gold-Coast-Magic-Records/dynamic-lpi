@@ -434,6 +434,8 @@ class NumberedTrackFolderTests(unittest.TestCase):
             self.assertEqual(resolve_gui_sources(str(folder)), (None, str(folder)))
             self.assertEqual(resolve_gui_sources(str(wav)), (str(wav), None))
         self.assertEqual(resolve_gui_sources(None), (None, None))
+        missing_dir = '/home/lathe/Desktop/records/PL-missing/Disc/A/Side/A'
+        self.assertEqual(resolve_gui_sources(missing_dir), (None, missing_dir))
 
     def test_main_launches_gui_for_folder(self):
         with tempfile.TemporaryDirectory() as tmp:

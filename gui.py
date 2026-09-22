@@ -653,6 +653,9 @@ class LpiPreviewApp:
         self.open_wav(str(tracks[0].wav_path), from_list=True)
 
     def open_wav(self, path: str, from_list: bool = False) -> None:
+        if Path(path).is_dir():
+            self.open_folder(path)
+            return
         try:
             self.wav = load_wav(path)
         except Exception as exc:

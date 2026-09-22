@@ -63,6 +63,18 @@ class FolderGuiTests(unittest.TestCase):
             self.assertEqual(self.app.var_idx_origin.get(), 'Loaded IDX')
             self.assertEqual(self.app.result.idx_events, [(0.0, 24000), (0.2, 19250)])
 
+    def test_open_wav_with_directory_loads_numbered_tracks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '2.wav', 8000, [(0.4, 120.0, 0.2)])
+            _write_tone_wav(folder / '1.wav', 8000, [(0.4, 120.0, 0.2)])
+
+            self.app.open_wav(str(folder))
+            _pump(self.root)
+
+            self.assertEqual(Path(self.app.wav.path).name, '1.wav')
+            self.assertEqual([t.number for t in self.app.tracks], [1, 2])
+
     def test_generate_after_load_switches_origin_label(self):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
