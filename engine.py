@@ -47,7 +47,7 @@ class PreviewConfig:
     rpm: float = 33.333
     hop_ms: float = 20.0
     lpf_hz: float = 100.0
-    lpi_tight: int = 24000
+    lpi_tight: int = 22000
     lpi_open: int = 19250
     reference_peak: float = 0.40
     quantize: int = 1024

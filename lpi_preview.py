@@ -4,7 +4,7 @@ Generate a variable-LPI .idx file from a WAV.
 
 CLI (batch / programmatic):
     python lpi_preview.py track.wav
-    python lpi_preview.py track.wav -o track.idx --rpm 33.333 --lpi-tight 24000 --lpi-open 19250
+    python lpi_preview.py track.wav -o track.idx --rpm 33.333 --lpi-tight 22000 --lpi-open 19250
 
 GUI (debug the waveform against the peak / LPI curve):
     python lpi_preview.py --gui /path/to/Side/A
@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--rpm', type=float, default=33.333, help='Platter speed; sets lookahead window 60/rpm')
     parser.add_argument('--hop-ms', type=float, default=20.0, help='Envelope hop size in milliseconds')
     parser.add_argument('--lpf', type=float, default=100.0, dest='lpf_hz', help='Low-pass Hz before peaking (0 disables)')
-    parser.add_argument('--lpi-tight', type=int, default=24000, help='G2 L for quiet / narrow land (higher = tighter)')
+    parser.add_argument('--lpi-tight', type=int, default=22000, help='G2 L for quiet / narrow land (higher = tighter)')
     parser.add_argument('--lpi-open', type=int, default=19250, help='G2 L for loud / wide land (lower = faster feed)')
     parser.add_argument('--reference-peak', type=float, default=0.40, help='Envelope level that saturates to Open LPI; quieter tracks still stretch their peak to Open')
     parser.add_argument('--quantize', type=int, default=1024, help='Minimum LPI step before a new .idx event; larger = fewer updates')

@@ -32,7 +32,7 @@ from engine import (
     read_idx,
     write_idx,
 )
-from lpi_preview import main as lpi_main, resolve_gui_sources
+from lpi_preview import build_parser, config_from_args, main as lpi_main, resolve_gui_sources
 
 
 def _write_tone_wav(path: Path, sample_rate: int, segments: list[tuple[float, float, float]]) -> None:
@@ -357,6 +357,16 @@ class AsymmetricLookaheadTests(unittest.TestCase):
         self.assertLess(mid_loud, 20500)
         self.assertLess(still_loud, 20500)
         self.assertLess(still_loud, mid_loud + 600)
+
+
+class DefaultLpiTightTests(unittest.TestCase):
+    def test_preview_config_defaults_to_22000(self):
+        self.assertEqual(PreviewConfig().lpi_tight, 22000)
+
+    def test_cli_defaults_to_22000(self):
+        args = build_parser().parse_args([])
+        self.assertEqual(args.lpi_tight, 22000)
+        self.assertEqual(config_from_args(args).lpi_tight, 22000)
 
 
 class CliTests(unittest.TestCase):
