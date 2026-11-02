@@ -380,6 +380,25 @@ def read_idx(path: str | Path) -> List[IdxEvent]:
     return events
 
 
+def set_idx_event_lpi(events: Sequence[IdxEvent], index: int, lpi: int) -> List[IdxEvent]:
+    items = list(events)
+    if index < 0 or index >= len(items):
+        raise IndexError(index)
+    time_s, _ = items[index]
+    items[index] = (float(time_s), int(lpi))
+    return items
+
+
+def remove_idx_event_at(events: Sequence[IdxEvent], index: int) -> List[IdxEvent]:
+    items = list(events)
+    if index < 0 or index >= len(items):
+        raise IndexError(index)
+    if len(items) <= 1:
+        raise ValueError('Cannot remove the last .idx event')
+    del items[index]
+    return items
+
+
 def idx_event_index_at(events: Sequence[IdxEvent], time_s: float) -> int:
     """Index of the .idx row active at time_s (last event with time <= time_s)."""
     if not events:

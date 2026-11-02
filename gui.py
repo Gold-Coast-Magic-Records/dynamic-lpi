@@ -26,6 +26,8 @@ from engine import (
     downsample_minmax,
     idx_event_index_at,
     list_numbered_tracks,
+    remove_idx_event_at,
+    set_idx_event_lpi,
     load_wav,
     read_idx,
     write_env,
@@ -136,6 +138,8 @@ def idx_origin_label(origin: Optional[str]) -> str:
         return 'Loaded IDX'
     if origin == 'generated':
         return 'Generated IDX'
+    if origin == 'edited':
+        return 'Edited IDX'
     return ''
 
 
@@ -325,24 +329,28 @@ class LpiPreviewApp:
         self.cursor_artists = []
         self._cursor_lines = []
         self._plot_bg = None
-        self._tree_bind = None
+        self._tree_click_bind = None
+        self._lpi_edit_entry = None
+        self._lpi_edit_item = None
 
-        side = ttk.Frame(body, width=240)
+        side = ttk.Frame(body, width=280)
         side.pack(side='right', fill='y', padx=(8, 0))
         side.pack_propagate(False)
         ttk.Label(side, textvariable=self.var_idx_events, foreground=MUTED).pack(anchor='w', pady=(0, 4))
-        columns = ('time', 'lpi')
+        columns = ('time', 'lpi', 'del')
         self.tree = ttk.Treeview(side, columns=columns, show='headings', selectmode='browse')
         self.tree.heading('time', text='Time (s)')
         self.tree.heading('lpi', text='LPI')
-        self.tree.column('time', width=100, anchor='e')
-        self.tree.column('lpi', width=90, anchor='e')
+        self.tree.heading('del', text='')
+        self.tree.column('time', width=96, anchor='e')
+        self.tree.column('lpi', width=88, anchor='e')
+        self.tree.column('del', width=32, anchor='center', stretch=False)
         scroll = ttk.Scrollbar(side, orient='vertical', command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side='left', fill='both', expand=True)
         scroll.pack(side='right', fill='y')
         self.tree.tag_configure('idx_active', background='#3a4556', foreground=FG)
-        self._tree_bind = self.tree.bind('<<TreeviewSelect>>', self._on_tree_select)
+        self._tree_click_bind = self.tree.bind('<Button-1>', self._on_tree_click, add='+')
 
         status = ttk.Frame(self.root, padding=(10, 4, 10, 8))
         status.pack(fill='x')
@@ -640,6 +648,7 @@ class LpiPreviewApp:
             self._playback_after = self.root.after(80, self._tick_playback)
 
     def _on_close(self) -> None:
+        self._cancel_lpi_edit()
         self._cancel_playback_ticks()
         self._unbind_space_keys()
         try:
@@ -817,21 +826,112 @@ class LpiPreviewApp:
         self.var_status.set(f'Wrote {path}')
 
     def _fill_tree(self) -> None:
-        if self._tree_bind is not None:
-            self.tree.unbind('<<TreeviewSelect>>', self._tree_bind)
-            self._tree_bind = None
+        self._cancel_lpi_edit()
         try:
             self.tree.delete(*self.tree.get_children())
             if self.result is None:
                 self.var_idx_events.set('.idx events')
                 return
             for time_s, lpi in self.result.idx_events:
-                self.tree.insert('', 'end', values=(f'{time_s:.3f}', lpi))
+                self.tree.insert('', 'end', values=(f'{time_s:.3f}', lpi, '×'))
             count = len(self.result.idx_events)
             self.var_idx_events.set(f'{count} .idx events')
         finally:
-            self._tree_bind = self.tree.bind('<<TreeviewSelect>>', self._on_tree_select)
             self._sync_idx_tree_highlight()
+
+    def _apply_idx_events(self, events) -> None:
+        if self.result is None:
+            return
+        apply_idx_overlay(self.result, events)
+        self._set_idx_origin('edited')
+        self._redraw()
+        self._fill_tree()
+        self._update_cursor_label()
+        if self.wav is not None:
+            self.var_status.set(
+                f'{Path(self.wav.path).name}  ·  edited  ·  {len(events)} LPI events'
+            )
+
+    def _tree_row_index(self, item_id: str) -> int:
+        return list(self.tree.get_children()).index(item_id)
+
+    def set_idx_lpi_at_index(self, index: int, lpi: int) -> None:
+        if self.result is None:
+            return
+        events = set_idx_event_lpi(self.result.idx_events, index, lpi)
+        self._apply_idx_events(events)
+
+    def delete_idx_at_index(self, index: int) -> None:
+        if self.result is None:
+            return
+        try:
+            events = remove_idx_event_at(self.result.idx_events, index)
+        except ValueError as exc:
+            messagebox.showinfo('Cannot delete', str(exc))
+            return
+        self._apply_idx_events(events)
+
+    def _cancel_lpi_edit(self) -> None:
+        entry = self._lpi_edit_entry
+        self._lpi_edit_entry = None
+        self._lpi_edit_item = None
+        if entry is not None:
+            try:
+                entry.destroy()
+            except Exception:
+                pass
+
+    def _on_lpi_edit_return(self, _event=None):
+        self._commit_lpi_edit()
+        return 'break'
+
+    def _on_lpi_edit_escape(self, _event=None):
+        self._cancel_lpi_edit()
+        return 'break'
+
+    def _commit_lpi_edit(self) -> None:
+        entry = self._lpi_edit_entry
+        item = self._lpi_edit_item
+        if entry is None or item is None or self.result is None:
+            self._cancel_lpi_edit()
+            return
+        raw = entry.get().strip()
+        self._cancel_lpi_edit()
+        try:
+            lpi = int(raw)
+        except ValueError:
+            messagebox.showerror('Invalid LPI', f'Not an integer: {raw!r}')
+            return
+        if lpi <= 0:
+            messagebox.showerror('Invalid LPI', 'LPI must be a positive integer.')
+            return
+        try:
+            index = self._tree_row_index(item)
+        except ValueError:
+            return
+        self.set_idx_lpi_at_index(index, lpi)
+
+    def _begin_lpi_edit(self, item_id: str) -> None:
+        if self.result is None:
+            return
+        self._cancel_lpi_edit()
+        values = self.tree.item(item_id, 'values')
+        if len(values) < 2:
+            return
+        bbox = self.tree.bbox(item_id, column='lpi')
+        if not bbox:
+            return
+        x, y, width, height = bbox
+        entry = ttk.Entry(self.tree)
+        entry.insert(0, str(values[1]))
+        entry.select_range(0, tk.END)
+        entry.place(x=x, y=y, width=width, height=height)
+        entry.focus_set()
+        self._lpi_edit_entry = entry
+        self._lpi_edit_item = item_id
+        entry.bind('<Return>', self._on_lpi_edit_return)
+        entry.bind('<Escape>', self._on_lpi_edit_escape)
+        entry.bind('<FocusOut>', lambda _e: self.root.after(1, self._commit_lpi_edit))
 
     def _sync_idx_tree_highlight(self, *, scroll: bool = False) -> None:
         """Mark the active .idx row without changing Treeview selection (avoids seek on play)."""
@@ -986,14 +1086,28 @@ class LpiPreviewApp:
             return
         self._seek_to(float(event.xdata))
 
-    def _on_tree_select(self, _event) -> None:
-        selection = self.tree.selection()
-        if not selection:
+    def _on_tree_click(self, event) -> None:
+        if self.tree.identify_region(event.x, event.y) != 'cell':
             return
-        time_s = parse_tree_time(self.tree.item(selection[0], 'values'))
-        if time_s is None:
+        item = self.tree.identify_row(event.y)
+        if not item:
             return
-        self._seek_to(time_s)
+        column = self.tree.identify_column(event.x)
+        if column == '#1':
+            time_s = parse_tree_time(self.tree.item(item, 'values'))
+            if time_s is not None:
+                self._seek_to(time_s)
+            return
+        if column == '#2':
+            self._begin_lpi_edit(item)
+            return 'break'
+        if column == '#3':
+            try:
+                index = self._tree_row_index(item)
+            except ValueError:
+                return
+            self.delete_idx_at_index(index)
+            return 'break'
 
     def _update_cursor_label(self) -> None:
         if self.wav is None:

@@ -27,6 +27,8 @@ from engine import (
     forward_max,
     idx_event_index_at,
     list_numbered_tracks,
+    remove_idx_event_at,
+    set_idx_event_lpi,
     lpi_dense_from_events,
     load_wav,
     map_combined_to_lpi,
@@ -358,6 +360,21 @@ class AsymmetricLookaheadTests(unittest.TestCase):
         self.assertLess(mid_loud, 20500)
         self.assertLess(still_loud, 20500)
         self.assertLess(still_loud, mid_loud + 600)
+
+
+class IdxEventMutationTests(unittest.TestCase):
+    def test_set_idx_event_lpi_replaces_value_at_index(self):
+        events = [(0.0, 24000), (0.5, 19250)]
+        updated = set_idx_event_lpi(events, 1, 20000)
+        self.assertEqual(updated, [(0.0, 24000), (0.5, 20000)])
+
+    def test_remove_idx_event_at_requires_more_than_one(self):
+        with self.assertRaises(ValueError):
+            remove_idx_event_at([(0.0, 24000)], 0)
+
+    def test_remove_idx_event_at_drops_row(self):
+        events = [(0.0, 24000), (0.5, 19250), (1.0, 24000)]
+        self.assertEqual(remove_idx_event_at(events, 1), [(0.0, 24000), (1.0, 24000)])
 
 
 class IdxEventIndexTests(unittest.TestCase):

@@ -270,6 +270,49 @@ class FolderGuiTests(unittest.TestCase):
         play_calls = [call for call in output.calls if call[0] == 'play']
         self.assertEqual(len(play_calls), 1)
 
+    def test_edit_idx_lpi_updates_overlay_and_origin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(0.4, 120.0, 0.2)])
+            write_idx(folder / '1.idx', [(0.0, 24000), (0.2, 19250)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        self.app.set_idx_lpi_at_index(1, 20000)
+        _pump(self.root)
+
+        self.assertEqual(self.app.result.idx_events[1], (0.2, 20000))
+        self.assertEqual(self.app.idx_origin, 'edited')
+        self.assertEqual(self.app.var_idx_origin.get(), 'Edited IDX')
+        rows = self.app.tree.get_children()
+        self.assertEqual(int(self.app.tree.item(rows[1], 'values')[1]), 20000)
+
+    def test_delete_idx_event_updates_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(0.4, 120.0, 0.2)])
+            write_idx(folder / '1.idx', [(0.0, 24000), (0.2, 19250), (0.4, 21000)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        self.app.delete_idx_at_index(1)
+        _pump(self.root)
+
+        self.assertEqual(self.app.result.idx_events, [(0.0, 24000), (0.4, 21000)])
+        self.assertEqual(len(self.app.tree.get_children()), 2)
+
+    def test_cannot_delete_last_idx_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(0.4, 120.0, 0.2)])
+            write_idx(folder / '1.idx', [(0.0, 24000)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        self.app.delete_idx_at_index(0)
+        _pump(self.root)
+        self.assertEqual(len(self.app.result.idx_events), 1)
+
     def test_playhead_stats_strip_shows_current_lpi(self):
         self.assertIs(self.app.cursor_label.master, self.app.stats_frame)
         self.assertIs(self.app.lpi_label.master, self.app.stats_frame)
