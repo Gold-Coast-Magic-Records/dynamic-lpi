@@ -15,7 +15,7 @@ from engine import write_idx
 from gui import LpiPreviewApp
 from player import NullAudioOutput, Playhead
 from test_engine import _write_tone_wav
-from test_player import FakeClock
+from test_player import FakeClock, RecordingOutput
 
 
 def _pump(root: tk.Tk, rounds: int = 8) -> None:
@@ -219,7 +219,11 @@ class FolderGuiTests(unittest.TestCase):
         self.app.toggle_playback()
         self.assertFalse(self.app.player.is_playing)
 
-    def test_playback_advances_idx_tree_selection(self):
+    def _active_idx_rows(self):
+        rows = self.app.tree.get_children()
+        return [row for row in rows if 'idx_active' in self.app.tree.item(row, 'tags')]
+
+    def test_playback_advances_idx_tree_highlight(self):
         clock = FakeClock()
         self.app.player = Playhead(time_fn=clock, output=NullAudioOutput())
         with tempfile.TemporaryDirectory() as tmp:
@@ -231,18 +235,40 @@ class FolderGuiTests(unittest.TestCase):
 
         rows = self.app.tree.get_children()
         self.assertEqual(len(rows), 3)
-        self.assertEqual(self.app.tree.selection()[0], rows[0])
+        self.assertEqual(self._active_idx_rows(), [rows[0]])
 
         self.app.play()
         clock.advance(0.5)
         self.app._tick_playback()
         _pump(self.root)
-        self.assertEqual(self.app.tree.selection()[0], rows[1])
+        self.assertEqual(self._active_idx_rows(), [rows[1]])
 
         clock.advance(0.4)
         self.app._tick_playback()
         _pump(self.root)
-        self.assertEqual(self.app.tree.selection()[0], rows[2])
+        self.assertEqual(self._active_idx_rows(), [rows[2]])
+
+    def test_playback_idx_highlight_does_not_restart_audio(self):
+        clock = FakeClock()
+        output = RecordingOutput()
+        self.app.player = Playhead(time_fn=clock, output=output)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(1.0, 120.0, 0.2)])
+            write_idx(folder / '1.idx', [(0.0, 24000), (0.4, 19250), (0.8, 24000)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        self.app.play()
+        play_calls = [call for call in output.calls if call[0] == 'play']
+        self.assertEqual(len(play_calls), 1)
+
+        clock.advance(0.5)
+        self.app._tick_playback()
+        _pump(self.root, rounds=12)
+
+        play_calls = [call for call in output.calls if call[0] == 'play']
+        self.assertEqual(len(play_calls), 1)
 
     def test_playhead_stats_strip_shows_current_lpi(self):
         self.assertIs(self.app.cursor_label.master, self.app.stats_frame)

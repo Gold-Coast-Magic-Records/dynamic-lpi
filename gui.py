@@ -165,7 +165,6 @@ class LpiPreviewApp:
         self.tracks = []
         self.idx_origin: Optional[str] = None
         self._syncing_list = False
-        self._syncing_tree = False
         self.player = Playhead(output=create_audio_output())
         print(f'LPI preview audio backend: {describe_audio_output(self.player.output)}', flush=True)
         self._playback_after = None
@@ -342,6 +341,7 @@ class LpiPreviewApp:
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side='left', fill='both', expand=True)
         scroll.pack(side='right', fill='y')
+        self.tree.tag_configure('idx_active', background='#3a4556', foreground=FG)
         self._tree_bind = self.tree.bind('<<TreeviewSelect>>', self._on_tree_select)
 
         status = ttk.Frame(self.root, padding=(10, 4, 10, 8))
@@ -600,7 +600,7 @@ class LpiPreviewApp:
         if self.player.samples is not None:
             self.player.seek(t)
         self._update_cursor_label()
-        self._sync_idx_tree_to_cursor(scroll=self.player.is_playing)
+        self._sync_idx_tree_highlight(scroll=self.player.is_playing)
         if self._follow_playhead_view():
             return
         if self.player.is_playing and self._cursor_lines:
@@ -611,7 +611,7 @@ class LpiPreviewApp:
 
     def _sync_playhead_visual(self) -> None:
         self._update_cursor_label()
-        self._sync_idx_tree_to_cursor(scroll=False)
+        self._sync_idx_tree_highlight(scroll=False)
         if self._follow_playhead_view():
             return
         self._draw_cursor()
@@ -633,7 +633,7 @@ class LpiPreviewApp:
         self._playback_after = None
         self.cursor_s = self.player.position_s
         self._update_cursor_label()
-        self._sync_idx_tree_to_cursor(scroll=True)
+        self._sync_idx_tree_highlight(scroll=True)
         if not self._follow_playhead_view():
             self._blit_playhead()
         if self.player.is_playing:
@@ -831,10 +831,11 @@ class LpiPreviewApp:
             self.var_idx_events.set(f'{count} .idx events')
         finally:
             self._tree_bind = self.tree.bind('<<TreeviewSelect>>', self._on_tree_select)
-            self._sync_idx_tree_to_cursor()
+            self._sync_idx_tree_highlight()
 
-    def _sync_idx_tree_to_cursor(self, *, scroll: bool = False) -> None:
-        if self._syncing_tree or self.result is None or not self.result.idx_events:
+    def _sync_idx_tree_highlight(self, *, scroll: bool = False) -> None:
+        """Mark the active .idx row without changing Treeview selection (avoids seek on play)."""
+        if self.result is None or not self.result.idx_events:
             return
         index = idx_event_index_at(self.result.idx_events, self.cursor_s)
         if index < 0:
@@ -842,20 +843,12 @@ class LpiPreviewApp:
         children = self.tree.get_children()
         if index >= len(children):
             return
-        item = children[index]
-        selected = self.tree.selection()
-        if selected and selected[0] == item:
-            if scroll:
-                self.tree.see(item)
-            return
-        self._syncing_tree = True
-        try:
-            self.tree.selection_set(item)
-            self.tree.focus(item)
-            if scroll:
-                self.tree.see(item)
-        finally:
-            self._syncing_tree = False
+        active = children[index]
+        for item in children:
+            tags = ('idx_active',) if item == active else ()
+            self.tree.item(item, tags=tags)
+        if scroll:
+            self.tree.see(active)
 
     def _refresh_canvas(self, reset_toolbar: bool = False) -> None:
         # Hide the playhead so the cached background can be blitted while playing
@@ -994,8 +987,6 @@ class LpiPreviewApp:
         self._seek_to(float(event.xdata))
 
     def _on_tree_select(self, _event) -> None:
-        if self._syncing_tree:
-            return
         selection = self.tree.selection()
         if not selection:
             return
