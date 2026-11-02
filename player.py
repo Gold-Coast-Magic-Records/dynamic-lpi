@@ -28,11 +28,9 @@ def resolve_sounddevice_output_device(sample_rate: int, channels: int):
 
     candidates = []
     try:
-        devices = sd.query_devices()
+        devices = list(sd.query_devices())
     except Exception:
         devices = []
-    if isinstance(devices, dict):
-        devices = [devices]
     for info in devices:
         if int(info.get('max_output_channels', 0)) < channels:
             continue
@@ -127,7 +125,7 @@ class SoundDeviceOutput:
             if finished:
                 raise sd.CallbackStop
 
-        self._stream = sd.OutputStream(
+        stream_kwargs = dict(
             samplerate=int(sample_rate),
             channels=channels,
             dtype='float32',
@@ -135,6 +133,9 @@ class SoundDeviceOutput:
             latency='high',
             callback=callback,
         )
+        if device is not None:
+            stream_kwargs['device'] = device
+        self._stream = sd.OutputStream(**stream_kwargs)
         self._stream.start()
 
     def stop(self) -> None:
@@ -170,11 +171,16 @@ def create_audio_output():
         import sounddevice as sd  # noqa: F401
         return SoundDeviceOutput()
     except Exception:
-        try:
-            import pyaudio  # noqa: F401
-            return PyAudioOutput()
-        except Exception:
-            return DisabledAudioOutput()
+        pass
+    try:
+        import pyaudio  # noqa: F401
+        return PyAudioOutput()
+    except Exception:
+        return DisabledAudioOutput()
+
+
+def describe_audio_output(output) -> str:
+    return type(output).__name__
 
 
 class PyAudioOutput:
@@ -207,13 +213,17 @@ class PyAudioOutput:
 
         def _run():
             pa = pyaudio.PyAudio()
-            stream = pa.open(
+            pulse_index = find_pyaudio_pulse_device_index(pa)
+            open_kwargs = dict(
                 format=pyaudio.paInt16,
                 channels=channels,
                 rate=int(sample_rate),
                 output=True,
                 frames_per_buffer=4096,
             )
+            if pulse_index is not None:
+                open_kwargs['output_device_index'] = pulse_index
+            stream = pa.open(**open_kwargs)
             self._pa = pa
             self._stream = stream
             frame_bytes = 4096 * channels * 2

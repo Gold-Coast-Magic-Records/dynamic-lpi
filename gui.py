@@ -30,7 +30,7 @@ from engine import (
     write_env,
     write_idx,
 )
-from player import Playhead, create_audio_output
+from player import Playhead, create_audio_output, describe_audio_output
 
 
 BG = '#1b1d21'
@@ -165,6 +165,7 @@ class LpiPreviewApp:
         self.idx_origin: Optional[str] = None
         self._syncing_list = False
         self.player = Playhead(output=create_audio_output())
+        print(f'LPI preview audio backend: {describe_audio_output(self.player.output)}', flush=True)
         self._playback_after = None
         self._cursor_lines = []
         self._plot_bg = None
