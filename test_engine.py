@@ -25,6 +25,7 @@ from engine import (
     apply_open_lookahead_hold,
     collapse_events,
     forward_max,
+    idx_event_index_at,
     list_numbered_tracks,
     lpi_dense_from_events,
     load_wav,
@@ -357,6 +358,19 @@ class AsymmetricLookaheadTests(unittest.TestCase):
         self.assertLess(mid_loud, 20500)
         self.assertLess(still_loud, 20500)
         self.assertLess(still_loud, mid_loud + 600)
+
+
+class IdxEventIndexTests(unittest.TestCase):
+    def test_idx_event_index_at_holds_until_next_event(self):
+        events = [(0.0, 24000), (0.2, 19250), (0.8, 24000)]
+        self.assertEqual(idx_event_index_at(events, 0.0), 0)
+        self.assertEqual(idx_event_index_at(events, 0.15), 0)
+        self.assertEqual(idx_event_index_at(events, 0.2), 1)
+        self.assertEqual(idx_event_index_at(events, 0.5), 1)
+        self.assertEqual(idx_event_index_at(events, 0.8), 2)
+
+    def test_idx_event_index_at_empty_returns_minus_one(self):
+        self.assertEqual(idx_event_index_at([], 1.0), -1)
 
 
 class PreviewConfigDefaultTests(unittest.TestCase):

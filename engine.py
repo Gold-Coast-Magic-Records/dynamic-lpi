@@ -380,6 +380,15 @@ def read_idx(path: str | Path) -> List[IdxEvent]:
     return events
 
 
+def idx_event_index_at(events: Sequence[IdxEvent], time_s: float) -> int:
+    """Index of the .idx row active at time_s (last event with time <= time_s)."""
+    if not events:
+        return -1
+    event_t = np.array([event[0] for event in events], dtype=np.float64)
+    index = int(np.searchsorted(event_t, float(time_s), side='right')) - 1
+    return int(np.clip(index, 0, len(events) - 1))
+
+
 def lpi_dense_from_events(times: np.ndarray, events: Sequence[IdxEvent]) -> np.ndarray:
     if times.size == 0:
         return np.zeros(0, dtype=np.int32)
