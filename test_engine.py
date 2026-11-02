@@ -359,14 +359,20 @@ class AsymmetricLookaheadTests(unittest.TestCase):
         self.assertLess(still_loud, mid_loud + 600)
 
 
-class DefaultLpiTightTests(unittest.TestCase):
-    def test_preview_config_defaults_to_22000(self):
-        self.assertEqual(PreviewConfig().lpi_tight, 22000)
+class PreviewConfigDefaultTests(unittest.TestCase):
+    def test_preview_config_default_lpi_tight(self):
+        self.assertEqual(PreviewConfig().lpi_tight, 24500)
 
-    def test_cli_defaults_to_22000(self):
+    def test_preview_config_default_lpf_hz(self):
+        self.assertEqual(PreviewConfig().lpf_hz, 150.0)
+
+    def test_cli_defaults_match_preview_config(self):
         args = build_parser().parse_args([])
-        self.assertEqual(args.lpi_tight, 22000)
-        self.assertEqual(config_from_args(args).lpi_tight, 22000)
+        self.assertEqual(args.lpi_tight, 24500)
+        self.assertEqual(args.lpf_hz, 150.0)
+        config = config_from_args(args)
+        self.assertEqual(config.lpi_tight, 24500)
+        self.assertEqual(config.lpf_hz, 150.0)
 
 
 class CliTests(unittest.TestCase):

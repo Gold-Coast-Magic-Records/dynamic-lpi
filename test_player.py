@@ -11,7 +11,12 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from player import NullAudioOutput, Playhead, fill_output_block
+from player import (
+    NullAudioOutput,
+    Playhead,
+    fill_output_block,
+    find_pyaudio_pulse_device_index,
+)
 
 
 class FakeClock:
@@ -116,6 +121,30 @@ class PlayheadTests(unittest.TestCase):
         clock.advance(10.5)
         self.assertAlmostEqual(player.position_s, 10.0)
         self.assertFalse(player.is_playing)
+
+
+class PulseDeviceLookupTests(unittest.TestCase):
+    def test_find_pyaudio_pulse_device_index_prefers_exact_pulse_name(self):
+        class FakePa:
+            def get_device_count(self):
+                return 2
+
+            def get_device_info_by_index(self, index):
+                if index == 0:
+                    return {'name': 'default', 'maxOutputChannels': 2}
+                return {'name': 'pulse', 'maxOutputChannels': 2}
+
+        self.assertEqual(find_pyaudio_pulse_device_index(FakePa()), 1)
+
+    def test_find_pyaudio_pulse_device_index_returns_none_when_missing(self):
+        class FakePa:
+            def get_device_count(self):
+                return 1
+
+            def get_device_info_by_index(self, _index):
+                return {'name': 'hw:0,0', 'maxOutputChannels': 2}
+
+        self.assertIsNone(find_pyaudio_pulse_device_index(FakePa()))
 
 
 class FillOutputBlockTests(unittest.TestCase):

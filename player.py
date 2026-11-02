@@ -11,6 +11,53 @@ import numpy as np
 TimeFn = Callable[[], float]
 
 
+def find_pyaudio_pulse_device_index(pyaudio_instance) -> Optional[int]:
+    """Match audio-player shared mode: route through the Pulse/PipeWire device."""
+    for index in range(pyaudio_instance.get_device_count()):
+        info = pyaudio_instance.get_device_info_by_index(index)
+        if info.get('maxOutputChannels', 0) < 1:
+            continue
+        if str(info.get('name', '')).lower() == 'pulse':
+            return int(index)
+    return None
+
+
+def resolve_sounddevice_output_device(sample_rate: int, channels: int):
+    """Pick an output device that can reach the lathe user's Pulse session."""
+    import sounddevice as sd
+
+    candidates = []
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        devices = []
+    if isinstance(devices, dict):
+        devices = [devices]
+    for info in devices:
+        if int(info.get('max_output_channels', 0)) < channels:
+            continue
+        name = str(info.get('name', '')).lower()
+        if name == 'pulse' or 'pulse' in name:
+            candidates.append(info['index'])
+    for fallback in ('default', 'pulse'):
+        if fallback not in candidates:
+            candidates.append(fallback)
+    candidates.append(None)
+
+    for device in candidates:
+        try:
+            sd.check_output_settings(
+                device=device,
+                samplerate=int(sample_rate),
+                channels=int(channels),
+                dtype='float32',
+            )
+            return device
+        except Exception:
+            continue
+    return None
+
+
 def fill_output_block(source: np.ndarray, start_frame: int, outdata: np.ndarray) -> tuple[int, bool]:
     """Copy source[start_frame:] into outdata. Returns (new_frame, finished)."""
     source = np.asarray(source)
@@ -66,6 +113,7 @@ class SoundDeviceOutput:
             self._data = data
             self._frame = start_frame
         channels = int(data.shape[1])
+        device = resolve_sounddevice_output_device(int(sample_rate), channels)
 
         def callback(outdata, frames, _time_info, _status):
             with self._lock:
