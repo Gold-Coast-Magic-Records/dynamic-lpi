@@ -29,6 +29,8 @@ from scipy.signal import butter, sosfiltfilt
 
 IdxEvent = Tuple[float, int]
 _NUMBERED_WAV = re.compile(r'^(\d+)\.wav$', re.IGNORECASE)
+AMPLITUDE_DB_MIN = -4.0
+AMPLITUDE_DB_MAX = 4.0
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,7 @@ class WavData:
     sample_rate: int
     channels: np.ndarray  # float32, shape (n_samples, n_channels)
     mid: np.ndarray  # float32 mono mid / (L+R)/2
+    dtype_name: str = 'int16'
 
 
 @dataclass
@@ -96,16 +99,18 @@ def load_wav(path: str | Path) -> WavData:
     if data.size == 0:
         raise ValueError(f'WAV file is empty: {path}')
 
+    dtype_name = str(data.dtype)
     if data.ndim == 1:
         data = data.reshape(-1, 1)
 
     data = _to_float32(data)
-    if data.shape[1] == 1:
-        mid = data[:, 0].copy()
-    else:
-        mid = data[:, :2].mean(axis=1)
-
-    return WavData(path=path, sample_rate=int(sample_rate), channels=data, mid=mid)
+    return WavData(
+        path=path,
+        sample_rate=int(sample_rate),
+        channels=data,
+        mid=mid_from_channels(data),
+        dtype_name=dtype_name,
+    )
 
 
 def _to_float32(data: np.ndarray) -> np.ndarray:
@@ -114,6 +119,30 @@ def _to_float32(data: np.ndarray) -> np.ndarray:
     info = np.iinfo(data.dtype)
     peak = float(max(abs(info.min), info.max))
     return (data.astype(np.float32) / peak)
+
+
+def mid_from_channels(channels: np.ndarray) -> np.ndarray:
+    data = np.asarray(channels)
+    if data.ndim == 1:
+        return data.astype(np.float32, copy=True)
+    if data.shape[1] == 1:
+        return data[:, 0].astype(np.float32, copy=True)
+    return data[:, :2].mean(axis=1).astype(np.float32)
+
+
+def gain_from_db(db: float) -> float:
+    """Voltage ratio for a dB change: 10 ** (dB / 20)."""
+    return float(10.0 ** (float(db) / 20.0))
+
+
+def apply_amplitude_db(channels: np.ndarray, db: float) -> np.ndarray:
+    """Scale audio by a constant dB gain in float32. Never multiplies integer PCM."""
+    data = np.asarray(channels)
+    if data.ndim == 1:
+        data = data.reshape(-1, 1)
+    data = _to_float32(data)
+    gain = np.float32(gain_from_db(db))
+    return (data * gain).astype(np.float32, copy=False)
 
 
 def lowpass_mid(mid: np.ndarray, sample_rate: int, lpf_hz: float) -> np.ndarray:
@@ -354,6 +383,27 @@ def analyse(wav: WavData, config: PreviewConfig | None = None) -> PreviewResult:
         lpi_dense=lpi,
         idx_events=collapse_events(times, lpi),
     )
+
+
+def write_wav(path: str | Path, wav: WavData, channels: np.ndarray | None = None) -> None:
+    """Write float channels back in the source WAV's original integer/float format."""
+    path = Path(path)
+    data = wav.channels if channels is None else np.asarray(channels)
+    if data.ndim == 1:
+        data = data.reshape(-1, 1)
+    clipped = np.clip(data, -1.0, 1.0)
+    dtype = np.dtype(getattr(wav, 'dtype_name', None) or 'int16')
+    if np.issubdtype(dtype, np.floating):
+        pcm = clipped.astype(dtype)
+    else:
+        info = np.iinfo(dtype)
+        peak = float(max(abs(info.min), info.max))
+        pcm = np.clip(np.round(clipped * peak), info.min, info.max).astype(dtype)
+    if pcm.ndim == 2 and pcm.shape[1] == 1:
+        pcm = pcm[:, 0]
+    tmp = path.with_name(path.name + '.tmp')
+    wavfile.write(tmp, int(wav.sample_rate), pcm)
+    tmp.replace(path)
 
 
 def write_idx(path: str | Path, events: Sequence[IdxEvent]) -> None:

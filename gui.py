@@ -16,24 +16,40 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from engine import (
+    AMPLITUDE_DB_MAX,
+    AMPLITUDE_DB_MIN,
     PreviewConfig,
     PreviewResult,
     WavData,
     analyse,
+    apply_amplitude_db,
     apply_idx_overlay,
     default_env_path,
     default_idx_path,
     downsample_minmax,
     idx_event_index_at,
     list_numbered_tracks,
-    remove_idx_event_at,
-    set_idx_event_lpi,
     load_wav,
     read_idx,
+    remove_idx_event_at,
+    set_idx_event_lpi,
     write_env,
     write_idx,
+    write_wav,
 )
 from player import Playhead, create_audio_output, describe_audio_output
+from vu import (
+    PeakHold,
+    VU_BAND_ORDER,
+    VU_COLORS,
+    VU_TICK_DB,
+    VU_WINDOW_MS,
+    instant_peaks,
+    lit_bands,
+    meter_fraction,
+    meter_fraction_from_db,
+    vu_tick_label,
+)
 
 
 BG = '#1b1d21'
@@ -172,10 +188,17 @@ class LpiPreviewApp:
         self.player = Playhead(output=create_audio_output())
         print(f'LPI preview audio backend: {describe_audio_output(self.player.output)}', flush=True)
         self._playback_after = None
+        self._playback_n = 0
         self._cursor_lines = []
         self._plot_bg = None
         self._saved_button_space_binds = {}
         self._view_xlim = None
+        self.amplitude_dialog = None
+        self.amplitude_scale = None
+        self._amp_origin_s = 0.0
+        self.vu_hold = PeakHold()
+        self.vu_levels = (0.0, 0.0)
+        self._vu_after = None
 
         self._build_vars()
         self._build_ui()
@@ -207,6 +230,8 @@ class LpiPreviewApp:
         self.var_now_lpi = tk.StringVar(value='LPI —')
         self.var_idx_events = tk.StringVar(value='.idx events')
         self.var_idx_origin = tk.StringVar(value='')
+        self.var_amp_db = _float_var(0.0)
+        self.var_amp_label = tk.StringVar(value='0.0 dB')
 
     def _build_ui(self) -> None:
         self.root.title('Dynamic LPI Preview')
@@ -250,6 +275,8 @@ class LpiPreviewApp:
         self.zoom_in_button = ttk.Button(toolbar, text='Zoom +', command=self.zoom_in)
         self.zoom_in_button.pack(side='left', padx=(8, 0))
         ttk.Label(toolbar, textvariable=self.var_idx_origin, foreground=ACCENT).pack(side='left', padx=(16, 0))
+        self.amplitude_button = ttk.Button(toolbar, text='Amplitude', command=self.open_amplitude_editor)
+        self.amplitude_button.pack(side='right')
 
         stats = ttk.Frame(self.root, padding=(10, 0, 10, 2))
         stats.pack(fill='x')
@@ -306,6 +333,7 @@ class LpiPreviewApp:
 
         plot_frame = ttk.Frame(body)
         plot_frame.pack(side='left', fill='both', expand=True)
+        self.plot_frame = plot_frame
 
         import matplotlib
         matplotlib.use('TkAgg', force=True)
@@ -322,6 +350,7 @@ class LpiPreviewApp:
         self.plot_toolbar = NavigationToolbar2Tk(self.canvas, plot_frame, pack_toolbar=False)
         self.plot_toolbar.update()
         self.plot_toolbar.pack(side='bottom', fill='x')
+        self._build_vu_meters(plot_frame)
         self.canvas.get_tk_widget().pack(side='top', fill='both', expand=True)
         self.canvas.mpl_connect('button_press_event', self._on_plot_click)
         self.canvas.mpl_connect('scroll_event', self._on_scroll_zoom)
@@ -356,6 +385,145 @@ class LpiPreviewApp:
         status.pack(fill='x')
         self.status_frame = status
         ttk.Label(status, textvariable=self.var_status, foreground=MUTED).pack(anchor='w')
+
+    def _build_vu_meters(self, parent) -> None:
+        self.vu_frame = tk.Frame(parent, bg=BG)
+        self.vu_frame.pack(side='bottom', fill='x', pady=(4, 2))
+        self.vu_scale = tk.Canvas(
+            self.vu_frame,
+            height=14,
+            bg=BG,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.vu_scale.pack(fill='x')
+        self.vu_left = self._add_vu_strip(self.vu_frame, pady=(0, 2))
+        self.vu_right = self._add_vu_strip(self.vu_frame)
+
+    def _add_vu_strip(self, parent, pady=(0, 0)):
+        canvas = tk.Canvas(
+            parent,
+            height=8,
+            bg='#14161a',
+            highlightthickness=0,
+            bd=0,
+        )
+        canvas.pack(fill='x', pady=pady)
+        canvas.bind('<Button-1>', self._reset_vu_hold)
+        return canvas
+
+    def _vu_samples(self):
+        if self.player.samples is not None:
+            return self.player.samples, self.player.sample_rate
+        if self.wav is None:
+            return None, 1
+        return self.wav.channels, self.wav.sample_rate
+
+    def _vu_time_s(self) -> float:
+        if self.player.is_playing:
+            return float(self.player.position_s)
+        return float(self.cursor_s)
+
+    def _update_vu(self) -> None:
+        samples, sample_rate = self._vu_samples()
+        if samples is None:
+            self.vu_levels = (0.0, 0.0)
+            self._draw_vu()
+            return
+        frame = int(round(self._vu_time_s() * float(sample_rate)))
+        window = max(1, int(round(float(sample_rate) * VU_WINDOW_MS / 1000.0)))
+        left, right = instant_peaks(samples, frame, window)
+        self.vu_levels = (left, right)
+        self.vu_hold.update(left, right)
+        self._draw_vu()
+
+    def _reset_vu_hold(self, _event=None):
+        self.vu_hold.reset()
+        self._draw_vu()
+
+    def _draw_vu(self) -> None:
+        self._draw_vu_scale()
+        self._draw_vu_strip(self.vu_left, self.vu_levels[0], self.vu_hold.left)
+        self._draw_vu_strip(self.vu_right, self.vu_levels[1], self.vu_hold.right)
+
+    def _vu_scale_items(self):
+        items = getattr(self.vu_scale, '_vu_scale_items', None)
+        if items is not None:
+            return items
+        items = []
+        for db in VU_TICK_DB:
+            color = VU_COLORS['red'] if db >= 0.0 else MUTED
+            item = self.vu_scale.create_text(
+                0,
+                7,
+                text=vu_tick_label(db),
+                fill=color,
+                font=('TkDefaultFont', 8),
+                anchor='center',
+            )
+            items.append((db, item))
+        self.vu_scale._vu_scale_items = items
+        return items
+
+    def _draw_vu_scale(self) -> None:
+        try:
+            items = self._vu_scale_items()
+            width = max(int(self.vu_scale.winfo_width()), 1)
+            height = max(int(self.vu_scale.winfo_height()), 14)
+        except tk.TclError:
+            return
+        for db, item in items:
+            frac = meter_fraction_from_db(db)
+            if frac <= 0.0:
+                anchor = 'w'
+                x = 0
+            elif frac >= 1.0:
+                anchor = 'e'
+                x = width
+            else:
+                anchor = 'center'
+                x = frac * width
+            self.vu_scale.coords(item, x, height / 2.0)
+            self.vu_scale.itemconfigure(item, anchor=anchor)
+
+    def _vu_items(self, canvas):
+        items = getattr(canvas, '_vu_items', None)
+        if items is not None:
+            return items
+        items = {}
+        for name in VU_BAND_ORDER:
+            items[name] = canvas.create_rectangle(
+                0, 0, 0, 0, fill=VU_COLORS[name], outline='',
+            )
+        items['hold'] = canvas.create_text(
+            0,
+            0,
+            text='-',
+            fill='#f4f1de',
+            font=('TkDefaultFont', 9, 'bold'),
+            anchor='center',
+            state='hidden',
+        )
+        canvas._vu_items = items
+        return items
+
+    def _draw_vu_strip(self, canvas, level: float, hold: float) -> None:
+        try:
+            items = self._vu_items(canvas)
+            width = max(int(canvas.winfo_width()), 1)
+            height = max(int(canvas.winfo_height()), int(str(canvas.cget('height')) or 0), 1)
+        except tk.TclError:
+            return
+        for name in VU_BAND_ORDER:
+            canvas.coords(items[name], 0, 0, 0, 0)
+        for lo, hi, name in lit_bands(level):
+            canvas.coords(items[name], lo * width, 0, hi * width, height)
+        if hold > 0:
+            x = meter_fraction(hold) * width
+            canvas.coords(items['hold'], x, height / 2.0)
+            canvas.itemconfigure(items['hold'], state='normal')
+        else:
+            canvas.itemconfigure(items['hold'], state='hidden')
 
     def _add_control(self, parent, label, variable, row, column, width=8):
         ttk.Label(parent, text=label).grid(row=row, column=column, sticky='e', padx=(6, 3), pady=1)
@@ -414,6 +582,9 @@ class LpiPreviewApp:
             self.open_folder(path)
 
     def play(self) -> None:
+        if self._amplitude_editor_open():
+            self.preview_amplitude()
+            return
         if self.wav is None:
             messagebox.showinfo('No WAV', 'Open a WAV file first.')
             return
@@ -439,8 +610,13 @@ class LpiPreviewApp:
     def stop_playback(self) -> None:
         if self.player.is_playing:
             self.player.pause()
-        self.cursor_s = self.player.position_s
         self._cancel_playback_ticks()
+        if self._amplitude_editor_open():
+            self.cursor_s = self._amp_origin_s
+            if self.player.samples is not None:
+                self.player.seek(self._amp_origin_s)
+        else:
+            self.cursor_s = self.player.position_s
         self._sync_playhead_visual()
 
     def go_to_start(self) -> None:
@@ -529,6 +705,13 @@ class LpiPreviewApp:
             target = self.root.focus_get()
         if focus_blocks_space(target):
             return
+        if self._amplitude_editor_open():
+            if self.player.is_playing:
+                self.stop_playback()
+            else:
+                self.preview_amplitude()
+            self._release_button_focus()
+            return 'break'
         if self.player.is_playing:
             self.stop_playback()
         else:
@@ -608,6 +791,7 @@ class LpiPreviewApp:
         if self.player.samples is not None:
             self.player.seek(t)
         self._update_cursor_label()
+        self._update_vu()
         self._sync_idx_tree_highlight(scroll=self.player.is_playing)
         if self._follow_playhead_view():
             return
@@ -619,6 +803,7 @@ class LpiPreviewApp:
 
     def _sync_playhead_visual(self) -> None:
         self._update_cursor_label()
+        self._update_vu()
         self._sync_idx_tree_highlight(scroll=False)
         if self._follow_playhead_view():
             return
@@ -627,7 +812,8 @@ class LpiPreviewApp:
 
     def _schedule_playback_ticks(self) -> None:
         self._cancel_playback_ticks()
-        self._playback_after = self.root.after(80, self._tick_playback)
+        self._playback_n = 0
+        self._playback_after = self.root.after(16, self._tick_playback)
 
     def _cancel_playback_ticks(self) -> None:
         if self._playback_after is not None:
@@ -636,19 +822,44 @@ class LpiPreviewApp:
             except Exception:
                 pass
             self._playback_after = None
+        self._cancel_vu_ticks()
+
+    def _cancel_vu_ticks(self) -> None:
+        if self._vu_after is not None:
+            try:
+                self.root.after_cancel(self._vu_after)
+            except Exception:
+                pass
+            self._vu_after = None
+
+    def _tick_vu(self) -> None:
+        """Keep the playhead moving on the same cadence as the VU meters."""
+        self._step_playback_visual()
+
+    def _step_playback_visual(self) -> None:
+        self.cursor_s = self.player.position_s
+        self._update_cursor_label()
+        try:
+            self._update_vu()
+        except Exception:
+            pass
+        self._sync_idx_tree_highlight(scroll=True)
+        self._playback_n += 1
+        if self._playback_n % 5 == 1 and self._follow_playhead_view():
+            return
+        self._blit_playhead()
 
     def _tick_playback(self) -> None:
         self._playback_after = None
-        self.cursor_s = self.player.position_s
-        self._update_cursor_label()
-        self._sync_idx_tree_highlight(scroll=True)
-        if not self._follow_playhead_view():
-            self._blit_playhead()
-        if self.player.is_playing:
-            self._playback_after = self.root.after(80, self._tick_playback)
+        try:
+            self._step_playback_visual()
+        finally:
+            if self.player.is_playing:
+                self._playback_after = self.root.after(16, self._tick_playback)
 
     def _on_close(self) -> None:
         self._cancel_lpi_edit()
+        self._close_amplitude_dialog()
         self._cancel_playback_ticks()
         self._unbind_space_keys()
         try:
@@ -680,6 +891,7 @@ class LpiPreviewApp:
         self._cancel_playback_ticks()
         self.cursor_s = 0.0
         self._view_xlim = None
+        self.vu_hold.reset()
         self.player.load(self.wav.channels, self.wav.sample_rate)
         self._last_dir = str(wav_path.parent)
         self.root.title(f'Dynamic LPI Preview — {wav_path.name}')
@@ -716,6 +928,7 @@ class LpiPreviewApp:
             f'{len(self.result.idx_events)} events'
         )
         self._update_cursor_label()
+        self._update_vu()
         self._refresh_canvas()
 
     def _set_idx_origin(self, origin: Optional[str]) -> None:
@@ -784,6 +997,7 @@ class LpiPreviewApp:
                 f'{self.result.n_hops} hops  ·  {len(self.result.idx_events)} LPI events'
             )
             self._update_cursor_label()
+            self._update_vu()
             self._refresh_canvas()
             self.root.after_idle(lambda: self._refresh_canvas())
         finally:
@@ -824,6 +1038,174 @@ class LpiPreviewApp:
             return
         write_env(path, self.result)
         self.var_status.set(f'Wrote {path}')
+
+    def _amplitude_editor_open(self) -> bool:
+        dialog = self.amplitude_dialog
+        if dialog is None:
+            return False
+        try:
+            return bool(dialog.winfo_exists())
+        except tk.TclError:
+            self.amplitude_dialog = None
+            return False
+
+    def _amplitude_db(self) -> float:
+        db = round(float(self.var_amp_db.get()), 1)
+        return min(max(db, AMPLITUDE_DB_MIN), AMPLITUDE_DB_MAX)
+
+    def _sync_amp_label(self, _value=None) -> None:
+        self.var_amp_label.set(f'{self._amplitude_db():+.1f} dB')
+
+    def open_amplitude_editor(self) -> None:
+        if self.wav is None:
+            messagebox.showinfo('No WAV', 'Open a WAV file first.')
+            return
+        if self._amplitude_editor_open():
+            try:
+                self.amplitude_dialog.lift()
+                self.amplitude_dialog.focus_set()
+            except tk.TclError:
+                pass
+            return
+        if self.player.is_playing:
+            self.stop_playback()
+        self._amp_origin_s = float(self.cursor_s)
+        self.var_amp_db.set(0.0)
+        self._sync_amp_label()
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Edit Amplitude')
+        dialog.configure(bg=BG)
+        dialog.resizable(False, False)
+        try:
+            dialog.transient(self.root)
+        except tk.TclError:
+            pass
+        self.amplitude_dialog = dialog
+
+        body = ttk.Frame(dialog, padding=(16, 12, 16, 12))
+        body.pack(fill='both', expand=True)
+        ttk.Label(body, text='Whole-file gain').pack(anchor='w')
+        scale_row = ttk.Frame(body)
+        scale_row.pack(fill='x', pady=(8, 4))
+        ttk.Label(scale_row, text='−4', foreground=MUTED).pack(side='left')
+        self.amplitude_scale = ttk.Scale(
+            scale_row,
+            from_=AMPLITUDE_DB_MIN,
+            to=AMPLITUDE_DB_MAX,
+            variable=self.var_amp_db,
+            command=self._sync_amp_label,
+            length=240,
+        )
+        self.amplitude_scale.pack(side='left', fill='x', expand=True, padx=8)
+        ttk.Label(scale_row, text='+4', foreground=MUTED).pack(side='right')
+        ttk.Label(body, textvariable=self.var_amp_label, foreground=ACCENT).pack(anchor='center')
+        buttons = ttk.Frame(body)
+        buttons.pack(fill='x', pady=(14, 0))
+        ttk.Button(buttons, text='Preview', command=self.preview_amplitude).pack(side='left')
+        ttk.Button(buttons, text='Apply', command=self.apply_amplitude).pack(side='left', padx=(8, 0))
+        ttk.Button(buttons, text='Cancel', command=self.cancel_amplitude).pack(side='right')
+
+        dialog.protocol('WM_DELETE_WINDOW', self.cancel_amplitude)
+        dialog.bind('<Escape>', lambda _e: self.cancel_amplitude())
+        self._hook_button_space(dialog)
+        try:
+            if bool(self.root.winfo_viewable()):
+                dialog.grab_set()
+            else:
+                dialog.withdraw()
+        except tk.TclError:
+            pass
+        dialog.focus_set()
+
+    def preview_amplitude(self) -> None:
+        if self.wav is None:
+            messagebox.showinfo('No WAV', 'Open a WAV file first.')
+            return
+        if not getattr(self.player.output, 'available', True):
+            messagebox.showerror(
+                'No audio output',
+                'Install PortAudio and the sounddevice package:\n  pip install sounddevice',
+            )
+            return
+        if self.player.is_playing:
+            self.player.pause()
+            self._cancel_playback_ticks()
+        scaled = apply_amplitude_db(self.wav.channels, self._amplitude_db())
+        try:
+            self.player.load(scaled, self.wav.sample_rate)
+            self.player.seek(self._amp_origin_s)
+            self.player.play()
+        except Exception as exc:
+            messagebox.showerror('Playback error', str(exc))
+            return
+        self.cursor_s = self._amp_origin_s
+        self._sync_playhead_visual()
+        self._schedule_playback_ticks()
+
+    def apply_amplitude(self) -> None:
+        if self.wav is None:
+            self._close_amplitude_dialog()
+            return
+        db = self._amplitude_db()
+        origin = self._amp_origin_s
+        changed = abs(db) >= 0.05
+        if self.player.is_playing:
+            self.player.pause()
+        self._cancel_playback_ticks()
+        try:
+            if changed:
+                scaled = apply_amplitude_db(self.wav.channels, db)
+                write_wav(self.wav.path, self.wav, scaled)
+                self.wav = load_wav(self.wav.path)
+                self.var_status.set(
+                    f'{Path(self.wav.path).name}  ·  amplitude {db:+.1f} dB'
+                )
+            self.player.load(self.wav.channels, self.wav.sample_rate)
+        except Exception as exc:
+            messagebox.showerror('Amplitude error', str(exc))
+            try:
+                self.player.load(self.wav.channels, self.wav.sample_rate)
+            except Exception:
+                pass
+            return
+        self._close_amplitude_dialog()
+        self.cursor_s = origin
+        if self.player.samples is not None:
+            self.player.seek(origin)
+        if changed:
+            self.generate()
+        else:
+            self._sync_playhead_visual()
+
+    def cancel_amplitude(self) -> None:
+        origin = self._amp_origin_s
+        if self.player.is_playing:
+            self.player.pause()
+        self._cancel_playback_ticks()
+        if self.wav is not None:
+            try:
+                self.player.load(self.wav.channels, self.wav.sample_rate)
+            except Exception:
+                pass
+        self._close_amplitude_dialog()
+        if self.wav is not None:
+            self._seek_to(origin)
+
+    def _close_amplitude_dialog(self) -> None:
+        dialog = self.amplitude_dialog
+        self.amplitude_dialog = None
+        self.amplitude_scale = None
+        if dialog is None:
+            return
+        try:
+            dialog.grab_release()
+        except Exception:
+            pass
+        try:
+            dialog.destroy()
+        except Exception:
+            pass
 
     def _fill_tree(self) -> None:
         self._cancel_lpi_edit()
@@ -1081,6 +1463,8 @@ class LpiPreviewApp:
 
     def _on_plot_click(self, event) -> None:
         if event.inaxes is None or event.xdata is None:
+            return
+        if self._amplitude_editor_open():
             return
         if toolbar_blocks_cursor(getattr(self.plot_toolbar, 'mode', None)):
             return

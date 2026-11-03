@@ -16,8 +16,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from engine import (
+    AMPLITUDE_DB_MAX,
+    AMPLITUDE_DB_MIN,
     PreviewConfig,
     analyse,
+    apply_amplitude_db,
     apply_causal_tighten_lowpass,
     apply_idx_overlay,
     apply_lpi_hysteresis,
@@ -25,15 +28,18 @@ from engine import (
     apply_open_lookahead_hold,
     collapse_events,
     forward_max,
+    gain_from_db,
     idx_event_index_at,
     list_numbered_tracks,
+    load_wav,
+    map_combined_to_lpi,
+    mid_from_channels,
+    read_idx,
     remove_idx_event_at,
     set_idx_event_lpi,
     lpi_dense_from_events,
-    load_wav,
-    map_combined_to_lpi,
-    read_idx,
     write_idx,
+    write_wav,
 )
 from lpi_preview import build_parser, config_from_args, main as lpi_main, resolve_gui_sources
 
@@ -497,6 +503,74 @@ class NumberedTrackFolderTests(unittest.TestCase):
                 rc = lpi_main(['--gui', tmp])
             launch.assert_called_once()
             self.assertEqual(rc, 0)
+
+
+class AmplitudeTests(unittest.TestCase):
+    def test_gain_from_db_is_standard_voltage_ratio(self):
+        self.assertAlmostEqual(gain_from_db(0.0), 1.0)
+        self.assertAlmostEqual(gain_from_db(6.0), 10 ** (6.0 / 20.0), places=7)
+        self.assertAlmostEqual(gain_from_db(-6.0), 10 ** (-6.0 / 20.0), places=7)
+        self.assertAlmostEqual(gain_from_db(4.0), 10 ** (4.0 / 20.0), places=7)
+
+    def test_slider_range_constants(self):
+        self.assertEqual(AMPLITUDE_DB_MIN, -4.0)
+        self.assertEqual(AMPLITUDE_DB_MAX, 4.0)
+
+    def test_apply_amplitude_db_scales_float_channels(self):
+        left = np.array([0.2, -0.4, 0.1], dtype=np.float32)
+        right = np.array([0.1, 0.05, -0.2], dtype=np.float32)
+        channels = np.stack([left, right], axis=1)
+        out = apply_amplitude_db(channels, 4.0)
+        gain = np.float32(10 ** (4.0 / 20.0))
+        self.assertEqual(out.dtype, np.float32)
+        np.testing.assert_allclose(out[:, 0], left * gain, atol=1e-6)
+        np.testing.assert_allclose(out[:, 1], right * gain, atol=1e-6)
+
+    def test_apply_amplitude_db_keeps_sub_8bit_detail(self):
+        # 8-bit PCM quantum is ~1/128. A quiet sample below that would vanish
+        # if gain were applied in integer/volume-byte space.
+        quiet = np.array([[0.003], [-0.002]], dtype=np.float32)
+        out = apply_amplitude_db(quiet, 4.0)
+        expected = quiet * np.float32(10 ** (4.0 / 20.0))
+        np.testing.assert_allclose(out, expected, atol=1e-7)
+        self.assertEqual(out.dtype, np.float32)
+        self.assertGreater(abs(float(out[0, 0])), 0.003)
+
+    def test_apply_amplitude_db_promotes_integer_pcm_before_gain(self):
+        pcm = np.array([[1000, -2000], [500, 250]], dtype=np.int16)
+        out = apply_amplitude_db(pcm, -6.0)
+        self.assertEqual(out.dtype, np.float32)
+        peak = float(max(abs(np.iinfo(np.int16).min), np.iinfo(np.int16).max))
+        expected = pcm.astype(np.float32) / peak * np.float32(10 ** (-6.0 / 20.0))
+        np.testing.assert_allclose(out, expected, atol=1e-6)
+        # Integer multiply-then-shift would have truncated these quiet values.
+        self.assertFalse(np.all(out == np.round(out)))
+
+    def test_write_wav_persists_float_gain_as_int16(self):
+        sample_rate = 8000
+        n = sample_rate // 10
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / '1.wav'
+            _write_tone_wav(path, sample_rate, [(n / sample_rate, 440.0, 0.25)])
+            wav = load_wav(path)
+            self.assertEqual(wav.dtype_name, 'int16')
+            boosted = apply_amplitude_db(wav.channels, 4.0)
+            write_wav(path, wav, boosted)
+            sample_rate_out, data = wavfile.read(path)
+            self.assertEqual(sample_rate_out, sample_rate)
+            self.assertEqual(data.dtype, np.int16)
+            reloaded = load_wav(path)
+            gain = 10 ** (4.0 / 20.0)
+            self.assertAlmostEqual(
+                float(np.max(np.abs(reloaded.channels))),
+                float(np.max(np.abs(wav.channels))) * gain,
+                places=3,
+            )
+
+    def test_mid_from_channels_is_stereo_mean(self):
+        channels = np.array([[0.2, 0.4], [-0.1, 0.1]], dtype=np.float32)
+        mid = mid_from_channels(channels)
+        np.testing.assert_allclose(mid, [0.3, 0.0], atol=1e-6)
 
 
 if __name__ == '__main__':

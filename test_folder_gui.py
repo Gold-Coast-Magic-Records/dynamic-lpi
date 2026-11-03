@@ -7,11 +7,14 @@ import tkinter as tk
 import unittest
 from pathlib import Path
 
+import numpy as np
+from scipy.io import wavfile
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engine import write_idx
+from engine import apply_amplitude_db, write_idx
 from gui import LpiPreviewApp
 from player import NullAudioOutput, Playhead
 from test_engine import _write_tone_wav
@@ -34,6 +37,10 @@ class FolderGuiTests(unittest.TestCase):
         self.app = LpiPreviewApp(self.root)
 
     def tearDown(self):
+        try:
+            self.app.cancel_amplitude()
+        except Exception:
+            pass
         try:
             self.app.stop_playback()
         except Exception:
@@ -159,6 +166,23 @@ class FolderGuiTests(unittest.TestCase):
         self.app.go_to_start()
         self.assertAlmostEqual(self.app.cursor_s, 0.0, places=2)
         self.assertAlmostEqual(self.app.player.position_s, 0.0, places=2)
+
+    def test_vu_ticks_keep_playhead_advancing(self):
+        clock = FakeClock()
+        self.app.player = Playhead(time_fn=clock, output=NullAudioOutput())
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(1.0, 120.0, 0.2)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        self.app._seek_to(0.1)
+        self.app.play()
+        for _ in range(4):
+            clock.advance(0.05)
+            self.app._tick_vu()
+        self.assertAlmostEqual(self.app.cursor_s, 0.3, places=2)
+        self.assertTrue(self.app.player.is_playing)
 
     def test_space_toggles_play_and_stop(self):
         clock = FakeClock()
@@ -325,6 +349,65 @@ class FolderGuiTests(unittest.TestCase):
         self.assertRegex(self.app.var_now_lpi.get(), r'LPI \d+')
         self.assertIn('t =', self.app.var_cursor.get())
 
+    def test_vu_meters_are_thin_horizontal_strips_under_plot(self):
+        self.assertIs(self.app.vu_frame.master, self.app.plot_frame)
+        self.assertIs(self.app.vu_left.master, self.app.vu_frame)
+        self.assertIs(self.app.vu_right.master, self.app.vu_frame)
+        self.assertLessEqual(int(str(self.app.vu_left.cget('height'))), 12)
+        self.assertLessEqual(int(str(self.app.vu_right.cget('height'))), 12)
+        self.assertNotEqual(self.app.vu_frame.master, self.app.stats_frame)
+        self.app._draw_vu()
+        labels = []
+        for item in self.app.vu_scale.find_all():
+            if self.app.vu_scale.type(item) == 'text':
+                labels.append(self.app.vu_scale.itemcget(item, 'text'))
+        self.assertIn('-70 dB', labels)
+        self.assertIn('-24 dB', labels)
+        self.assertIn('-12 dB', labels)
+        self.assertIn('-6 dB', labels)
+        self.assertIn('-3 dB', labels)
+        self.assertIn('0 dB', labels)
+
+    def test_vu_updates_instant_and_holds_peak(self):
+        clock = FakeClock()
+        self.app.player = Playhead(time_fn=clock, output=NullAudioOutput())
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(
+                folder / '1.wav',
+                8000,
+                [(0.2, 120.0, 0.8), (0.3, 120.0, 0.05)],
+            )
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        self.app._seek_to(0.05)
+        self.app._update_vu()
+        left, right = self.app.vu_levels
+        self.assertGreater(left, 0.6)
+        self.assertGreater(right, 0.6)
+        held = (self.app.vu_hold.left, self.app.vu_hold.right)
+        self.assertGreater(held[0], 0.6)
+
+        self.app._seek_to(0.35)
+        self.app._update_vu()
+        self.assertLess(self.app.vu_levels[0], 0.2)
+        self.assertGreaterEqual(self.app.vu_hold.left, held[0] - 1e-6)
+
+    def test_vu_peak_hold_resets_on_new_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(0.3, 120.0, 0.7)])
+            _write_tone_wav(folder / '2.wav', 8000, [(0.3, 120.0, 0.1)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+            self.app._seek_to(0.1)
+            self.app._update_vu()
+            self.assertGreater(self.app.vu_hold.left, 0.5)
+            self.app.open_wav(str(folder / '2.wav'), from_list=True)
+            _pump(self.root)
+            self.assertLess(self.app.vu_hold.left, 0.3)
+
     def test_tracks_column_is_narrow(self):
         self.assertLessEqual(int(str(self.app.tracks_frame.cget('width'))), 120)
 
@@ -363,6 +446,179 @@ class FolderGuiTests(unittest.TestCase):
         x0, x1 = self.app.ax_wave.get_xlim()
         self.assertAlmostEqual(x0, 0.0, places=2)
         self.assertAlmostEqual(x1 - x0, span, places=2)
+
+    def test_amplitude_button_is_on_toolbar(self):
+        self.assertTrue(hasattr(self.app, 'amplitude_button'))
+        self.assertEqual(str(self.app.amplitude_button.cget('text')), 'Amplitude')
+        self.assertIs(self.app.amplitude_button.master, self.app.toolbar)
+
+    def test_amplitude_button_does_not_add_toolbar_row(self):
+        _pump(self.root)
+        self.root.update_idletasks()
+        toolbar_height = int(self.app.toolbar.winfo_reqheight())
+        button_height = int(self.app.amplitude_button.winfo_reqheight())
+        self.assertLessEqual(toolbar_height, button_height + 24)
+
+    def _widget_texts(self, widget):
+        texts = []
+        try:
+            value = widget.cget('text')
+        except tk.TclError:
+            value = None
+        if value:
+            texts.append(str(value))
+        try:
+            children = widget.winfo_children()
+        except tk.TclError:
+            return texts
+        for child in children:
+            texts.extend(self._widget_texts(child))
+        return texts
+
+    def test_open_amplitude_editor_shows_modal_controls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(0.4, 120.0, 0.2)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        self.app.cursor_s = 0.12
+        self.app.open_amplitude_editor()
+        _pump(self.root)
+
+        dialog = self.app.amplitude_dialog
+        self.assertIsNotNone(dialog)
+        self.assertEqual(str(dialog.title()), 'Edit Amplitude')
+        texts = self._widget_texts(dialog)
+        self.assertIn('Preview', texts)
+        self.assertIn('Apply', texts)
+        self.assertIn('Cancel', texts)
+        self.assertAlmostEqual(float(self.app.amplitude_scale.cget('from')), -4.0)
+        self.assertAlmostEqual(float(self.app.amplitude_scale.cget('to')), 4.0)
+        self.assertAlmostEqual(self.app._amp_origin_s, 0.12, places=3)
+
+    def test_amplitude_preview_plays_gained_audio_from_cursor(self):
+        clock = FakeClock()
+        output = SampleCaptureOutput()
+        self.app.player = Playhead(time_fn=clock, output=output)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(0.5, 120.0, 0.25)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        original_peak = float(np.max(np.abs(self.app.wav.channels)))
+        self.app.cursor_s = 0.18
+        self.app.open_amplitude_editor()
+        _pump(self.root)
+        self.app.var_amp_db.set(4.0)
+        self.app.preview_amplitude()
+        _pump(self.root)
+
+        self.assertTrue(self.app.player.is_playing)
+        self.assertEqual(output.start_frame, int(round(0.18 * 8000)))
+        gain = 10 ** (4.0 / 20.0)
+        preview_peak = float(np.max(np.abs(output.samples)))
+        self.assertAlmostEqual(preview_peak, original_peak * gain, places=5)
+        self.assertEqual(output.samples.dtype, np.float32)
+        np.testing.assert_allclose(
+            self.app.wav.channels,
+            apply_amplitude_db(output.samples, -4.0),
+            atol=1e-5,
+        )
+
+    def test_amplitude_preview_restarts_from_original_origin(self):
+        clock = FakeClock()
+        output = SampleCaptureOutput()
+        self.app.player = Playhead(time_fn=clock, output=output)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(1.0, 120.0, 0.2)])
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+
+        self.app.cursor_s = 0.2
+        self.app.open_amplitude_editor()
+        _pump(self.root)
+        self.app.var_amp_db.set(1.0)
+        self.app.preview_amplitude()
+        clock.advance(0.3)
+        self.app._tick_playback()
+        self.assertGreater(self.app.cursor_s, 0.35)
+        self.app.stop_playback()
+        self.app.var_amp_db.set(-2.0)
+        output.calls.clear()
+        self.app.preview_amplitude()
+
+        play_frames = [call[1] for call in output.calls if call[0] == 'play']
+        self.assertEqual(play_frames[-1], int(round(0.2 * 8000)))
+        gain = 10 ** (-2.0 / 20.0)
+        self.assertAlmostEqual(
+            float(np.max(np.abs(output.samples))),
+            float(np.max(np.abs(self.app.wav.channels))) * gain,
+            places=5,
+        )
+
+    def test_amplitude_apply_rewrites_wav_and_keeps_cursor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            path = folder / '1.wav'
+            _write_tone_wav(path, 8000, [(0.4, 120.0, 0.2)])
+            before = wavfile.read(path)
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+            origin = 0.11
+            self.app.cursor_s = origin
+            self.app.open_amplitude_editor()
+            _pump(self.root)
+            self.app.var_amp_db.set(3.0)
+            self.app.apply_amplitude()
+            _pump(self.root, rounds=20)
+
+            self.assertIsNone(self.app.amplitude_dialog)
+            self.assertAlmostEqual(self.app.cursor_s, origin, places=2)
+            sample_rate, after = wavfile.read(path)
+            self.assertEqual(sample_rate, before[0])
+            self.assertEqual(after.dtype, np.int16)
+            gain = 10 ** (3.0 / 20.0)
+            self.assertAlmostEqual(
+                float(np.max(np.abs(after))) / float(np.max(np.abs(before[1]))),
+                gain,
+                places=2,
+            )
+
+    def test_amplitude_cancel_does_not_rewrite_wav(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            path = folder / '1.wav'
+            _write_tone_wav(path, 8000, [(0.4, 120.0, 0.2)])
+            original = path.read_bytes()
+            self.app.open_folder(str(folder))
+            _pump(self.root)
+            self.app.cursor_s = 0.08
+            self.app.open_amplitude_editor()
+            _pump(self.root)
+            self.app.var_amp_db.set(4.0)
+            self.app.preview_amplitude()
+            self.app.cancel_amplitude()
+            _pump(self.root)
+
+            self.assertIsNone(self.app.amplitude_dialog)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertAlmostEqual(self.app.cursor_s, 0.08, places=2)
+
+
+class SampleCaptureOutput(RecordingOutput):
+    def __init__(self):
+        super().__init__()
+        self.samples = None
+        self.start_frame = None
+
+    def play(self, samples, sample_rate: int, start_frame: int = 0) -> None:
+        data = np.asarray(samples)
+        self.samples = data.copy()
+        self.start_frame = int(start_frame)
+        super().play(samples, sample_rate, start_frame)
 
 
 if __name__ == '__main__':
