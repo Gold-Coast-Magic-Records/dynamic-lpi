@@ -153,6 +153,16 @@ class QuantizeTwoRevTests(unittest.TestCase):
         got = apply_lpi_hysteresis(raw, quantize=16, lo=19250, hi=24000)
         np.testing.assert_array_equal(got, [19250, 19250, 19250, 19250, 19250])
 
+    def test_hysteresis_preserves_off_grid_open_lpi(self):
+        raw = np.array([19000.0, 19000.0, 19000.0])
+        got = apply_lpi_hysteresis(raw, quantize=1024, lo=19000, hi=24500)
+        np.testing.assert_array_equal(got, [19000, 19000, 19000])
+
+    def test_hysteresis_preserves_off_grid_open_lpi_18750(self):
+        raw = np.array([18750.0, 18750.0])
+        got = apply_lpi_hysteresis(raw, quantize=1024, lo=18750, hi=24500)
+        np.testing.assert_array_equal(got, [18750, 18750])
+
 
 class LpiLowpassTests(unittest.TestCase):
     def test_zero_cutoff_is_passthrough(self):

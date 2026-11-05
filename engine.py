@@ -259,6 +259,23 @@ def apply_lpi_lowpass(
         return lpi
 
 
+def lpi_quantize_levels(lo: int, hi: int, quantize: int) -> np.ndarray:
+    """Valid LPI steps between open (lo) and tight (hi), including off-grid endpoints."""
+    q = max(1, int(quantize))
+    lo_i = int(min(lo, hi))
+    hi_i = int(max(lo, hi))
+    levels = {lo_i, hi_i}
+    g = int(np.ceil(lo_i / q) * q)
+    while g <= hi_i:
+        levels.add(g)
+        g += q
+    g = lo_i
+    while g <= hi_i:
+        levels.add(int(g))
+        g += q
+    return np.array(sorted(levels), dtype=np.int64)
+
+
 def apply_lpi_hysteresis(lpi: np.ndarray, quantize: int, lo: int, hi: int) -> np.ndarray:
     """Snap to the quantize grid, but only move after a full step of travel.
 
@@ -270,9 +287,11 @@ def apply_lpi_hysteresis(lpi: np.ndarray, quantize: int, lo: int, hi: int) -> np
     q = max(1, int(quantize))
     lo_i = int(min(lo, hi))
     hi_i = int(max(lo, hi))
+    levels = lpi_quantize_levels(lo_i, hi_i, q)
 
     def snap(value: float) -> int:
-        return int(np.clip(np.round(value / q) * q, lo_i, hi_i))
+        idx = int(np.argmin(np.abs(levels - float(value))))
+        return int(levels[idx])
 
     out = np.empty(int(lpi.shape[0]), dtype=np.int32)
     held = snap(float(lpi[0]))
