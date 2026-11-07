@@ -407,19 +407,29 @@ class IdxEventIndexTests(unittest.TestCase):
 
 
 class PreviewConfigDefaultTests(unittest.TestCase):
-    def test_preview_config_default_lpi_tight(self):
-        self.assertEqual(PreviewConfig().lpi_tight, 24500)
-
-    def test_preview_config_default_lpf_hz(self):
-        self.assertEqual(PreviewConfig().lpf_hz, 150.0)
+    def test_preview_config_defaults(self):
+        cfg = PreviewConfig()
+        self.assertEqual(cfg.lpi_tight, 24000)
+        self.assertEqual(cfg.lpi_open, 18900)
+        self.assertEqual(cfg.lpf_hz, 150.0)
+        self.assertEqual(cfg.hop_ms, 20.0)
+        self.assertEqual(cfg.quantize, 512)
+        self.assertEqual(cfg.min_hold_ms, 400.0)
+        self.assertEqual(cfg.slew_ms, 250.0)
 
     def test_cli_defaults_match_preview_config(self):
+        defaults = PreviewConfig()
         args = build_parser().parse_args([])
-        self.assertEqual(args.lpi_tight, 24500)
-        self.assertEqual(args.lpf_hz, 150.0)
+        self.assertEqual(args.lpi_tight, defaults.lpi_tight)
+        self.assertEqual(args.lpi_open, defaults.lpi_open)
+        self.assertEqual(args.lpf_hz, defaults.lpf_hz)
+        self.assertEqual(args.hop_ms, defaults.hop_ms)
+        self.assertEqual(args.quantize, defaults.quantize)
+        self.assertEqual(args.min_hold_ms, defaults.min_hold_ms)
+        self.assertEqual(args.slew_ms, defaults.slew_ms)
         config = config_from_args(args)
-        self.assertEqual(config.lpi_tight, 24500)
-        self.assertEqual(config.lpf_hz, 150.0)
+        self.assertEqual(config.lpi_tight, defaults.lpi_tight)
+        self.assertEqual(config.lpi_open, defaults.lpi_open)
 
 
 class CliTests(unittest.TestCase):

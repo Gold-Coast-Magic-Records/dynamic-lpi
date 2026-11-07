@@ -49,11 +49,11 @@ class PreviewConfig:
     rpm: float = 33.333
     hop_ms: float = 20.0
     lpf_hz: float = 150.0
-    lpi_tight: int = 24500
-    lpi_open: int = 19250
+    lpi_tight: int = 24000
+    lpi_open: int = 18900
     reference_peak: float = 0.40
-    quantize: int = 1024
-    min_hold_ms: float = 100.0
+    quantize: int = 512
+    min_hold_ms: float = 400.0
     slew_ms: float = 250.0
     lookahead_revs: float = 1.0
     two_rev: bool = True
