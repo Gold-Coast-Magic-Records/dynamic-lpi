@@ -182,6 +182,8 @@ class LpiPreviewApp:
         self._last_dir = str(Path.home())
         self._generating = False
         self._busy_depth = 0
+        self._busy_plot_enter_bind = None
+        self._busy_plot_motion_bind = None
         self._active_track_index: Optional[int] = None
         self.tracks = []
         self.idx_origin: Optional[str] = None
@@ -359,7 +361,8 @@ class LpiPreviewApp:
         self.plot_toolbar.update()
         self.plot_toolbar.pack(side='bottom', fill='x')
         self._build_vu_meters(plot_frame)
-        self.canvas.get_tk_widget().pack(side='top', fill='both', expand=True)
+        self.plot_tk = self.canvas.get_tk_widget()
+        self.plot_tk.pack(side='top', fill='both', expand=True)
         self.canvas.mpl_connect('button_press_event', self._on_plot_click)
         self.canvas.mpl_connect('scroll_event', self._on_scroll_zoom)
         self.canvas.mpl_connect('resize_event', lambda _e: setattr(self, '_plot_bg', None))
@@ -547,6 +550,36 @@ class LpiPreviewApp:
         entry.grid(row=row, column=column + 1, sticky='w', pady=1)
         entry.bind('<Return>', lambda _e: self.generate())
 
+    def _busy_cursor_targets(self):
+        widgets = [self.root, self.plot_frame, self.plot_tk]
+        toolbar = self.plot_toolbar
+        widgets.append(toolbar)
+        if toolbar is not None:
+            widgets.extend(toolbar.winfo_children())
+        for widget in (
+            getattr(self, 'vu_scale', None),
+            getattr(self, 'vu_left', None),
+            getattr(self, 'vu_right', None),
+        ):
+            if widget is not None:
+                widgets.append(widget)
+        return widgets
+
+    def _apply_busy_cursor(self, cursor: str) -> None:
+        for widget in self._busy_cursor_targets():
+            try:
+                widget.configure(cursor=cursor)
+            except (tk.TclError, AttributeError):
+                pass
+
+    def _on_plot_busy_cursor(self, _event=None) -> None:
+        if self._busy_depth <= 0:
+            return
+        try:
+            self.plot_tk.configure(cursor='watch')
+        except tk.TclError:
+            pass
+
     def _enter_busy(self, message: str = 'Working…') -> None:
         self._busy_depth += 1
         self.var_busy.set(message)
@@ -556,10 +589,18 @@ class LpiPreviewApp:
                 self.busy_progress.start(12)
             except tk.TclError:
                 pass
-            try:
-                self.root.config(cursor='watch')
-            except tk.TclError:
-                pass
+            self._apply_busy_cursor('watch')
+            if self._busy_plot_enter_bind is None:
+                self._busy_plot_enter_bind = self.plot_tk.bind(
+                    '<Enter>',
+                    self._on_plot_busy_cursor,
+                    add='+',
+                )
+                self._busy_plot_motion_bind = self.plot_tk.bind(
+                    '<Motion>',
+                    self._on_plot_busy_cursor,
+                    add='+',
+                )
             try:
                 self.generate_button.state(['disabled'])
             except tk.TclError:
@@ -580,10 +621,19 @@ class LpiPreviewApp:
             self.busy_frame.pack_forget()
         except tk.TclError:
             pass
-        try:
-            self.root.config(cursor='')
-        except tk.TclError:
-            pass
+        self._apply_busy_cursor('')
+        if self._busy_plot_enter_bind is not None:
+            try:
+                self.plot_tk.unbind('<Enter>', self._busy_plot_enter_bind)
+            except tk.TclError:
+                pass
+            self._busy_plot_enter_bind = None
+        if self._busy_plot_motion_bind is not None:
+            try:
+                self.plot_tk.unbind('<Motion>', self._busy_plot_motion_bind)
+            except tk.TclError:
+                pass
+            self._busy_plot_motion_bind = None
         try:
             self.generate_button.state(['!disabled'])
         except tk.TclError:
