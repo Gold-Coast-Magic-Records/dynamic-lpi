@@ -24,7 +24,6 @@ from engine import (
     analyse,
     apply_amplitude_db,
     apply_idx_overlay,
-    default_env_path,
     default_idx_path,
     downsample_minmax,
     idx_event_index_at,
@@ -33,7 +32,6 @@ from engine import (
     read_idx,
     remove_idx_event_at,
     set_idx_event_lpi,
-    write_env,
     write_idx,
     write_wav,
 )
@@ -57,6 +55,7 @@ PANEL = '#24262b'
 FG = '#e6e6e6'
 MUTED = '#9aa0a6'
 ACCENT = '#c9a227'
+TRACK_ACTIVE_BG = '#3a4556'
 
 _PAN_ZOOM_MODES = {'pan/zoom', 'zoom rect', 'pan', 'zoom'}
 _VALUE_FIELD_CLASSES = {'Entry', 'TEntry', 'Text', 'TCombobox', 'Spinbox', 'TSpinbox'}
@@ -182,6 +181,8 @@ class LpiPreviewApp:
         self.cursor_s = 0.0
         self._last_dir = str(Path.home())
         self._generating = False
+        self._busy_depth = 0
+        self._active_track_index: Optional[int] = None
         self.tracks = []
         self.idx_origin: Optional[str] = None
         self._syncing_list = False
@@ -226,6 +227,8 @@ class LpiPreviewApp:
         self.var_lpi_lpf = _float_var(c.lpi_lpf_hz)
         self.var_two_rev = tk.BooleanVar(value=c.two_rev)
         self.var_status = tk.StringVar(value='Open a WAV to generate an LPI preview.')
+        self.var_busy = tk.StringVar(value='Working…')
+        self.var_track = tk.StringVar(value='Track: —')
         self.var_cursor = tk.StringVar(value='t = —')
         self.var_now_lpi = tk.StringVar(value='LPI —')
         self.var_idx_events = tk.StringVar(value='.idx events')
@@ -261,9 +264,9 @@ class LpiPreviewApp:
         self.toolbar = toolbar
         ttk.Button(toolbar, text='Open WAV…', command=self.browse_wav).pack(side='left')
         ttk.Button(toolbar, text='Open folder…', command=self.browse_folder).pack(side='left', padx=(8, 0))
-        ttk.Button(toolbar, text='Generate', command=self.generate).pack(side='left', padx=(8, 0))
+        self.generate_button = ttk.Button(toolbar, text='Generate', command=self.generate)
+        self.generate_button.pack(side='left', padx=(8, 0))
         ttk.Button(toolbar, text='Save .idx…', command=self.save_idx).pack(side='left', padx=(8, 0))
-        ttk.Button(toolbar, text='Save .env.csv…', command=self.save_env).pack(side='left', padx=(8, 0))
         self.start_button = ttk.Button(toolbar, text='|<', command=self.go_to_start, width=3)
         self.start_button.pack(side='left', padx=(16, 0))
         self.play_button = ttk.Button(toolbar, text='Play', command=self.play)
@@ -283,8 +286,10 @@ class LpiPreviewApp:
         self.stats_frame = stats
         self.lpi_label = ttk.Label(stats, textvariable=self.var_now_lpi, foreground=ACCENT)
         self.lpi_label.pack(side='right', anchor='e')
+        self.track_label = ttk.Label(stats, textvariable=self.var_track, foreground=ACCENT)
+        self.track_label.pack(side='left', anchor='w')
         self.cursor_label = ttk.Label(stats, textvariable=self.var_cursor, foreground=MUTED)
-        self.cursor_label.pack(side='left', anchor='w')
+        self.cursor_label.pack(side='left', anchor='w', padx=(16, 0))
 
         controls = ttk.LabelFrame(self.root, text='Preview parameters', padding=(8, 2))
         controls.pack(fill='x', padx=10, pady=(0, 4))
@@ -327,9 +332,12 @@ class LpiPreviewApp:
             highlightthickness=0,
             borderwidth=0,
             font=('TkDefaultFont', 11),
+            exportselection=False,
+            activestyle='none',
         )
         self.track_list.pack(fill='both', expand=True)
         self.track_list.bind('<<ListboxSelect>>', self._on_track_select)
+        self.track_list.bind('<FocusOut>', lambda _e: self._apply_track_list_highlight())
 
         plot_frame = ttk.Frame(body)
         plot_frame.pack(side='left', fill='both', expand=True)
@@ -384,6 +392,14 @@ class LpiPreviewApp:
         status = ttk.Frame(self.root, padding=(10, 4, 10, 8))
         status.pack(fill='x')
         self.status_frame = status
+        self.busy_frame = ttk.Frame(status)
+        self.busy_progress = ttk.Progressbar(
+            self.busy_frame,
+            mode='indeterminate',
+            length=140,
+        )
+        self.busy_progress.pack(side='left', padx=(0, 8))
+        ttk.Label(self.busy_frame, textvariable=self.var_busy, foreground=ACCENT).pack(side='left')
         ttk.Label(status, textvariable=self.var_status, foreground=MUTED).pack(anchor='w')
 
     def _build_vu_meters(self, parent) -> None:
@@ -530,6 +546,54 @@ class LpiPreviewApp:
         entry = ttk.Entry(parent, textvariable=variable, width=width)
         entry.grid(row=row, column=column + 1, sticky='w', pady=1)
         entry.bind('<Return>', lambda _e: self.generate())
+
+    def _enter_busy(self, message: str = 'Working…') -> None:
+        self._busy_depth += 1
+        self.var_busy.set(message)
+        if self._busy_depth == 1:
+            self.busy_frame.pack(anchor='w', fill='x', pady=(0, 4))
+            try:
+                self.busy_progress.start(12)
+            except tk.TclError:
+                pass
+            try:
+                self.root.config(cursor='watch')
+            except tk.TclError:
+                pass
+            try:
+                self.generate_button.state(['disabled'])
+            except tk.TclError:
+                pass
+        self.root.update_idletasks()
+
+    def _leave_busy(self) -> None:
+        if self._busy_depth <= 0:
+            return
+        self._busy_depth -= 1
+        if self._busy_depth != 0:
+            return
+        try:
+            self.busy_progress.stop()
+        except tk.TclError:
+            pass
+        try:
+            self.busy_frame.pack_forget()
+        except tk.TclError:
+            pass
+        try:
+            self.root.config(cursor='')
+        except tk.TclError:
+            pass
+        try:
+            self.generate_button.state(['!disabled'])
+        except tk.TclError:
+            pass
+
+    def _update_track_label(self) -> None:
+        if self.wav is None:
+            self.var_track.set('Track: —')
+            return
+        self.var_track.set(f'Track: {Path(self.wav.path).name}')
 
     def _init_plot(self) -> None:
         self._style_axes()
@@ -882,30 +946,43 @@ class LpiPreviewApp:
         if Path(path).is_dir():
             self.open_folder(path)
             return
+        self._open_wav_args = (path, from_list)
+        self._enter_busy('Loading audio…')
+        self.root.after(1, self._open_wav_worker)
+
+    def _open_wav_worker(self) -> None:
+        path, from_list = self._open_wav_args
         try:
-            self.wav = load_wav(path)
-        except Exception as exc:
-            messagebox.showerror('WAV error', str(exc))
-            return
-        wav_path = Path(path)
-        self._cancel_playback_ticks()
-        self.cursor_s = 0.0
-        self._view_xlim = None
-        self.vu_hold.reset()
-        self.player.load(self.wav.channels, self.wav.sample_rate)
-        self._last_dir = str(wav_path.parent)
-        self.root.title(f'Dynamic LPI Preview — {wav_path.name}')
-        if not from_list:
-            sibling_tracks = list_numbered_tracks(wav_path.parent)
-            if sibling_tracks:
-                self.tracks = sibling_tracks
-                self._refresh_track_list()
-        self._select_track_in_list(wav_path)
-        idx_path = default_idx_path(path)
-        if idx_path.is_file():
-            self._load_existing_idx(idx_path)
-            return
-        self.generate()
+            try:
+                self.wav = load_wav(path)
+            except Exception as exc:
+                messagebox.showerror('WAV error', str(exc))
+                return
+            wav_path = Path(path)
+            self._cancel_playback_ticks()
+            self.cursor_s = 0.0
+            self._view_xlim = None
+            self.vu_hold.reset()
+            self.player.load(self.wav.channels, self.wav.sample_rate)
+            self._last_dir = str(wav_path.parent)
+            self.root.title(f'Dynamic LPI Preview — {wav_path.name}')
+            self._update_track_label()
+            if not from_list:
+                sibling_tracks = list_numbered_tracks(wav_path.parent)
+                if sibling_tracks:
+                    self.tracks = sibling_tracks
+                    self._refresh_track_list()
+            self._select_track_in_list(wav_path)
+            idx_path = default_idx_path(path)
+            if idx_path.is_file():
+                self.var_busy.set('Loading index…')
+                self.root.update_idletasks()
+                self._load_existing_idx(idx_path)
+                return
+            self.generate()
+        finally:
+            if not self._generating and self._busy_depth > 0:
+                self._leave_busy()
 
     def _load_existing_idx(self, idx_path: Path) -> None:
         if self.wav is None:
@@ -940,19 +1017,34 @@ class LpiPreviewApp:
         for track in self.tracks:
             marker = '  idx' if track.has_idx else ''
             self.track_list.insert(tk.END, f'{track.wav_path.name}{marker}')
+        self._apply_track_list_highlight()
+
+    def _apply_track_list_highlight(self) -> None:
+        count = self.track_list.size()
+        if count <= 0:
+            return
+        for index in range(count):
+            if index == self._active_track_index:
+                self.track_list.itemconfig(index, bg=TRACK_ACTIVE_BG, fg=FG)
+            else:
+                self.track_list.itemconfig(index, bg=PANEL, fg=FG)
 
     def _select_track_in_list(self, wav_path: Path) -> None:
         target = wav_path.resolve()
         for index, track in enumerate(self.tracks):
             if track.wav_path.resolve() == target:
+                self._active_track_index = index
                 self._syncing_list = True
                 try:
                     self.track_list.selection_clear(0, tk.END)
                     self.track_list.selection_set(index)
                     self.track_list.see(index)
+                    self._apply_track_list_highlight()
                 finally:
                     self._syncing_list = False
                 return
+        self._active_track_index = None
+        self._apply_track_list_highlight()
 
     def _on_track_select(self, _event) -> None:
         if self._syncing_list:
@@ -975,6 +1067,11 @@ class LpiPreviewApp:
         if self._generating:
             return
         self._generating = True
+        if self._busy_depth == 0:
+            self._enter_busy('Generating LPI…')
+        else:
+            self.var_busy.set('Generating LPI…')
+            self.root.update_idletasks()
         self.var_status.set('Generating…')
         # Return to the Tk event loop before the heavy analyse + draw so
         # Linux/TkAgg does not swallow the canvas refresh inside the button click.
@@ -1002,6 +1099,8 @@ class LpiPreviewApp:
             self.root.after_idle(lambda: self._refresh_canvas())
         finally:
             self._generating = False
+            if self._busy_depth > 0:
+                self._leave_busy()
 
     def save_idx(self) -> None:
         if self.result is None or self.wav is None:
@@ -1021,23 +1120,6 @@ class LpiPreviewApp:
         self.var_status.set(f'Wrote {path} ({len(self.result.idx_events)} events)')
         if self.tracks:
             self._refresh_track_list()
-
-    def save_env(self) -> None:
-        if self.result is None or self.wav is None:
-            messagebox.showinfo('Nothing to save', 'Generate a preview first.')
-            return
-        initial = str(default_env_path(self.wav.path))
-        path = filedialog.asksaveasfilename(
-            title='Save envelope CSV',
-            initialdir=self._last_dir,
-            initialfile=Path(initial).name,
-            defaultextension='.csv',
-            filetypes=[('CSV', '*.csv'), ('All files', '*.*')],
-        )
-        if not path:
-            return
-        write_env(path, self.result)
-        self.var_status.set(f'Wrote {path}')
 
     def _amplitude_editor_open(self) -> bool:
         dialog = self.amplitude_dialog
@@ -1224,15 +1306,24 @@ class LpiPreviewApp:
     def _apply_idx_events(self, events) -> None:
         if self.result is None:
             return
-        apply_idx_overlay(self.result, events)
-        self._set_idx_origin('edited')
-        self._redraw()
-        self._fill_tree()
-        self._update_cursor_label()
-        if self.wav is not None:
-            self.var_status.set(
-                f'{Path(self.wav.path).name}  ·  edited  ·  {len(events)} LPI events'
-            )
+        self._apply_idx_events_payload = list(events)
+        self._enter_busy('Updating LPI…')
+        self.root.after(1, self._apply_idx_events_worker)
+
+    def _apply_idx_events_worker(self) -> None:
+        events = self._apply_idx_events_payload
+        try:
+            apply_idx_overlay(self.result, events)
+            self._set_idx_origin('edited')
+            self._redraw()
+            self._fill_tree()
+            self._update_cursor_label()
+            if self.wav is not None:
+                self.var_status.set(
+                    f'{Path(self.wav.path).name}  ·  edited  ·  {len(events)} LPI events'
+                )
+        finally:
+            self._leave_busy()
 
     def _tree_row_index(self, item_id: str) -> int:
         return list(self.tree.get_children()).index(item_id)

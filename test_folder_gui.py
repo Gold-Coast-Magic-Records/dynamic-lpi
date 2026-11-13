@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from engine import apply_amplitude_db, write_idx
-from gui import LpiPreviewApp
+from gui import TRACK_ACTIVE_BG, LpiPreviewApp
 from player import NullAudioOutput, Playhead
 from test_engine import _write_tone_wav
 from test_player import FakeClock, RecordingOutput
@@ -53,6 +53,27 @@ class FolderGuiTests(unittest.TestCase):
             self.root.destroy()
         except tk.TclError:
             pass
+
+    def test_shows_loaded_track_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '1.wav', 8000, [(0.4, 120.0, 0.2)])
+            self.app.open_folder(str(folder))
+            _pump(self.root, rounds=20)
+        self.assertEqual(self.app.var_track.get(), 'Track: 1.wav')
+
+    def test_active_track_stays_highlighted_after_defocus(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            _write_tone_wav(folder / '2.wav', 8000, [(0.4, 120.0, 0.2)])
+            _write_tone_wav(folder / '1.wav', 8000, [(0.4, 120.0, 0.2)])
+            self.app.open_folder(str(folder))
+            _pump(self.root, rounds=20)
+
+        self.assertEqual(self.app._active_track_index, 0)
+        self.app.track_list.selection_clear(0, tk.END)
+        self.app._apply_track_list_highlight()
+        self.assertEqual(self.app.track_list.itemcget(0, 'bg'), TRACK_ACTIVE_BG)
 
     def test_open_folder_loads_first_wav_and_existing_idx(self):
         with tempfile.TemporaryDirectory() as tmp:
