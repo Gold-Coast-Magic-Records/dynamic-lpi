@@ -1,0 +1,14 @@
+{
+  "OPEN_LPI": 18000,
+  "TIGHT_LPI": 22500,
+  "rpm": 33.333,
+  "hop_ms": 20.0,
+  "lpf_hz": 150.0,
+  "reference_peak": 0.4,
+  "quantize": 512,
+  "min_hold_ms": 400.0,
+  "slew_ms": 250.0,
+  "lookahead_revs": 1.0,
+  "two_rev": true,
+  "lpi_lpf_hz": 0.2
+}

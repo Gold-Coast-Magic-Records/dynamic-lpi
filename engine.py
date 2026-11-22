@@ -27,7 +27,11 @@ from numpy.lib.stride_tricks import sliding_window_view
 from scipy.io import wavfile
 from scipy.signal import butter, sosfiltfilt
 
+from preview_config import BUILTIN_DEFAULTS, load_preview_config_defaults
+
 IdxEvent = Tuple[float, int]
+
+_PREVIEW_DEFAULTS = load_preview_config_defaults()
 _NUMBERED_WAV = re.compile(r'^(\d+)\.wav$', re.IGNORECASE)
 AMPLITUDE_DB_MIN = -4.0
 AMPLITUDE_DB_MAX = 4.0
@@ -46,18 +50,18 @@ class NumberedTrack:
 
 @dataclass
 class PreviewConfig:
-    rpm: float = 33.333
-    hop_ms: float = 20.0
-    lpf_hz: float = 150.0
-    lpi_tight: int = 24000
-    lpi_open: int = 18900
-    reference_peak: float = 0.40
-    quantize: int = 512
-    min_hold_ms: float = 400.0
-    slew_ms: float = 250.0
-    lookahead_revs: float = 1.0
-    two_rev: bool = True
-    lpi_lpf_hz: float = 0.2
+    rpm: float = _PREVIEW_DEFAULTS['rpm']
+    hop_ms: float = _PREVIEW_DEFAULTS['hop_ms']
+    lpf_hz: float = _PREVIEW_DEFAULTS['lpf_hz']
+    lpi_tight: int = _PREVIEW_DEFAULTS['lpi_tight']
+    lpi_open: int = _PREVIEW_DEFAULTS['lpi_open']
+    reference_peak: float = _PREVIEW_DEFAULTS['reference_peak']
+    quantize: int = _PREVIEW_DEFAULTS['quantize']
+    min_hold_ms: float = _PREVIEW_DEFAULTS['min_hold_ms']
+    slew_ms: float = _PREVIEW_DEFAULTS['slew_ms']
+    lookahead_revs: float = _PREVIEW_DEFAULTS['lookahead_revs']
+    two_rev: bool = _PREVIEW_DEFAULTS['two_rev']
+    lpi_lpf_hz: float = _PREVIEW_DEFAULTS['lpi_lpf_hz']
 
 
 @dataclass

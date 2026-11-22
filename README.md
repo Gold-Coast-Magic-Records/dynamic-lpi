@@ -86,7 +86,9 @@ python3 lpi_preview.py --gui /path/to/1.wav
 - Click **Time (s)** to seek; click **LPI** to edit a value; **×** deletes an event  
 - **Save .idx…** — write the index next to the WAV (same base name)
 
-Default parameters for our equipment (RPM 33⅓, tight/open LPI, quantize step, etc.) are built into the app; tweak them and regenerate as needed for your particular setup.
+Default parameters live in **`config.json`** beside `lpi_preview.py`. Edit that file (especially **`OPEN_LPI`** and **`TIGHT_LPI`**) and restart the GUI or re-run the CLI — no code changes needed. CLI flags still override these values for a single run.
+
+Point at another file with the environment variable `DYNAMIC_LPI_CONFIG` (same idea as `AUDIO_PLAYER_CONFIG` in audio-player).
 
 ---
 

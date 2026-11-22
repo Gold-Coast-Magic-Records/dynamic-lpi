@@ -408,14 +408,17 @@ class IdxEventIndexTests(unittest.TestCase):
 
 class PreviewConfigDefaultTests(unittest.TestCase):
     def test_preview_config_defaults(self):
+        from preview_config import load_preview_config_defaults
+
+        expected = load_preview_config_defaults()
         cfg = PreviewConfig()
-        self.assertEqual(cfg.lpi_tight, 24000)
-        self.assertEqual(cfg.lpi_open, 18900)
-        self.assertEqual(cfg.lpf_hz, 150.0)
-        self.assertEqual(cfg.hop_ms, 20.0)
-        self.assertEqual(cfg.quantize, 512)
-        self.assertEqual(cfg.min_hold_ms, 400.0)
-        self.assertEqual(cfg.slew_ms, 250.0)
+        self.assertEqual(cfg.lpi_tight, expected['lpi_tight'])
+        self.assertEqual(cfg.lpi_open, expected['lpi_open'])
+        self.assertEqual(cfg.lpf_hz, expected['lpf_hz'])
+        self.assertEqual(cfg.hop_ms, expected['hop_ms'])
+        self.assertEqual(cfg.quantize, expected['quantize'])
+        self.assertEqual(cfg.min_hold_ms, expected['min_hold_ms'])
+        self.assertEqual(cfg.slew_ms, expected['slew_ms'])
 
     def test_cli_defaults_match_preview_config(self):
         defaults = PreviewConfig()
